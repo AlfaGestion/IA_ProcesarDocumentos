@@ -68,7 +68,7 @@ python .\lector_facturas_to_json_v5.py fac1.jpg --model gpt-4.1 --outdir E:\temp
 Para liquidaciones, el modelo por defecto es `gpt-4.1`. Podés cambiarlo con `--model`.
 ****************************************************************************************************
 ## Uso básico (liquidaciones de tarjetas)
-Genera un archivo de texto con dos columnas: `CONCEPTO|TOTAL`.
+Genera un archivo de texto con encabezado y luego dos columnas: `CONCEPTO|IMPORTE`.
 ```powershell
 python .\lector_liquidaciones_to_json_v1.py liquidacion.pdf --outdir E:\temp
 ```
@@ -101,7 +101,14 @@ python .\lector_liquidaciones_to_json_v1.py img1.jpg img2.jpg --outdir E:\temp -
 ## Notas
 - `--tile` solo aplica a imágenes (JPG/PNG/WEBP). Para PDF se ignora.
 - Máximo 5 archivos por ejecución.
-- Para liquidaciones, la salida es `.txt` con formato `CONCEPTO|TOTAL`.
+- Para liquidaciones, la salida es `.txt` con este formato:
+  - Línea 1: nombre del banco
+  - Línea 2: nombre de la tarjeta
+  - Línea 3: período (mes/año)
+  - Línea 4: concepto (máx. 50 caracteres)
+  - Línea 5: `CONCEPTO|IMPORTE`
+  - Líneas siguientes: conceptos e importes
+- Para Banco Nación, además se genera un control diario en `*_control_diarios.xls` (tabulado).
 - Se valida integridad básica: suma de `ROWS.Total` vs `TOTALES.Neto gravado` (o `TOTALES.Total`). Si el desvío supera 3%, se agrega una advertencia en `meta.observaciones`.
 - Si en el texto aparece "Cantidad de items: N" y se detectan menos filas, se agrega una advertencia en `meta.observaciones`.
 
