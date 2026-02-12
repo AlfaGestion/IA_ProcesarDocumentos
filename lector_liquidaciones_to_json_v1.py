@@ -36,6 +36,7 @@ import queue
 import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import calendar
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -101,14 +102,21 @@ class StatusUI:
         self.txt.configure(state="disabled")
 
         self._closed = False
+        self._time_after_id = None
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.root.after(100, self._poll)
-        self.root.after(200, self._tick_time)
+        self._time_after_id = self.root.after(200, self._tick_time)
 
     def _on_close(self):
         # Si cierran la ventana, no matamos el proceso; solo ocultamos.
         self._closed = True
+        if self._time_after_id is not None:
+            try:
+                self.root.after_cancel(self._time_after_id)
+            except Exception:
+                pass
+            self._time_after_id = None
         try:
             self.root.withdraw()
         except Exception:
@@ -119,8 +127,12 @@ class StatusUI:
             secs = int(time.time() - self.t0)
             mm = secs // 60
             ss = secs % 60
-            self.lbl_time.configure(text=f"Tiempo: {mm:02d}:{ss:02d}")
-            self.root.after(200, self._tick_time)
+            try:
+                self.lbl_time.configure(text=f"Tiempo: {mm:02d}:{ss:02d}")
+            except Exception:
+                self._closed = True
+                return
+            self._time_after_id = self.root.after(200, self._tick_time)
 
     def push(self, msg: str):
         """Seguro desde cualquier hilo."""
@@ -150,6 +162,13 @@ class StatusUI:
         self.txt.configure(state="disabled")
 
     def close(self):
+        self._closed = True
+        if self._time_after_id is not None:
+            try:
+                self.root.after_cancel(self._time_after_id)
+            except Exception:
+                pass
+            self._time_after_id = None
         try:
             self.pb.stop()
         except Exception:
@@ -456,6 +475,881 @@ def _write_log(log_path: Path, msg: str) -> None:
         pass
 
 
+def _extract_blocks_sequential(page_texts: List[str]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    current: Dict[str, float] = {}
+
+    def _canon_label(ln: str) -> Optional[str]:
+        t = re.sub(r"\s+", " ", ln.upper()).strip()
+        if "VENTAS C/DESCUENTO CONTADO" in t:
+            return "VENTAS C/DESCUENTO CONTADO"
+        if "ARANCEL" in t:
+            return "ARANCEL"
+        if "IVA CRED.FISC.COMERCIO S/ARANC" in t:
+            return "IVA CRED.FISC.COMERCIO S/ARANC 21,00%"
+        if "IVA RI SERV.OPER. INT" in t:
+            return "IVA RI SERV.OPER. INT."
+        if "SERVICIO OPER. INTERNAC" in t or "SERV.OPER. INT" in t:
+            return "SERVICIO OPER. INTERNAC."
+        if "RETENCION ING.BRUTOS SIRTAC" in t:
+            return "RETENCION ING.BRUTOS SIRTAC"
+        if "PERCEPCION IVA R.G. 2408" in t:
+            return "PERCEPCION IVA R.G. 2408 3,00 %"
+        if "QR PERCEPCION IVA 3337" in t:
+            return "QR PERCEPCION IVA 3337"
+        if "QR RETENCION IIBB RIO NEGRO" in t:
+            return "QR RETENCION IIBB RIO NEGRO"
+        if "IMPORTE NETO DE PAGOS" in t:
+            return "IMPORTE NETO DE PAGOS"
+        return None
+
+    for text in page_texts:
+        for ln in text.splitlines():
+            label = _canon_label(ln)
+            if not label:
+                continue
+            nums = re.findall(r"([0-9][0-9\.\,]*)", ln)
+            if not nums:
+                continue
+            amount = _parse_number(nums[-1])
+            if amount <= 0:
+                continue
+            current[label] = amount
+            if label == "IMPORTE NETO DE PAGOS":
+                rows.append({"concepts": dict(current)})
+                current.clear()
+
+    return rows
+
+
+def _extract_pdf_totals(files: List[str]) -> Dict[str, float]:
+    """Extrae totales clave desde PDFs (cabeceras y totales diarios)."""
+    totals = {
+        "total_presentado": None,
+        "neto_header": None,
+        "bank_nacion": False,
+        "bank_patagonia": False,
+        "bank_name": None,
+        "card_name": None,
+        "period": None,
+        "patagonia_desglose": [],
+        "ventas_sum": 0.0,
+        "arancel_sum": 0.0,
+        "iva_sum": 0.0,
+        "ret_iva_sum": 0.0,
+        "ret_iibb_sum": 0.0,
+        "ret_gan_sum": 0.0,
+        "neto_sum": 0.0,
+        "has_daily": False,
+        "daily_rows": [],
+    }
+
+    if PdfReader is None:
+        return totals
+
+    def _first_match_val(pattern: str, text: str) -> Optional[float]:
+        m = re.search(pattern, text, flags=re.IGNORECASE)
+        if not m:
+            return None
+        return _parse_number(m.group(1))
+
+    def _sum_matches(pattern: str, text: str) -> float:
+        acc = 0.0
+        for m in re.finditer(pattern, text, flags=re.IGNORECASE):
+            acc += _parse_number(m.group(1))
+        return acc
+
+    def _extract_header_amounts(text: str) -> List[float]:
+        # Extrae importes con formato 1.234.567,89 alrededor de los labels
+        amounts: List[float] = []
+        for label in ("Total presentado", "Neto de pagos"):
+            idx = text.lower().find(label.lower())
+            if idx >= 0:
+                window = text[idx : idx + 220]
+                for m in re.finditer(r"([0-9]{1,3}(?:[.\s][0-9]{3})*,[0-9]{2})", window):
+                    amounts.append(_parse_number(m.group(1)))
+        return [a for a in amounts if a > 0]
+
+    def _extract_patagonia_header(text: str) -> Dict[str, float]:
+        # Busca total presentado / total descuento / saldo en el encabezado Patagonia
+        out = {}
+        # Captura los tres montos que suelen aparecer en bloque
+        m = re.search(
+            r"TOTAL\s+PRESENTADO\s*\$\s*([0-9\.\,]+)\s*[\r\n ]+"
+            r"TOTAL\s+DESCUENTO\s*\$\s*([0-9\.\,]+)\s*[\r\n ]+"
+            r"SALDO\s*\$\s*([0-9\.\,]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            out["total_presentado"] = _parse_number(m.group(1))
+            out["total_descuento"] = _parse_number(m.group(2))
+            out["saldo"] = _parse_number(m.group(3))
+            return out
+        # Fallback por bloque: extraer montos en la zona cercana a "TOTAL PRESENTADO"
+        idx = text.upper().find("TOTAL PRESENTADO")
+        if idx >= 0:
+            window = text[idx : idx + 500]
+            nums = [ _parse_number(n) for n in re.findall(r"([0-9]{1,3}(?:[.\s][0-9]{3})*,[0-9]{2})", window) ]
+            nums = [n for n in nums if n > 0]
+            if len(nums) >= 3:
+                out["total_presentado"] = nums[0]
+                out["total_descuento"] = nums[1]
+                out["saldo"] = nums[2]
+                return out
+        # Fallback por sección de domicilio: tomar 3 primeros importes antes de "FECHA DE PAGO"
+        idx2 = text.upper().find("RIO NEGRO")
+        if idx2 >= 0:
+            window2 = text[idx2 : idx2 + 500]
+            cut = window2.upper().find("FECHA DE PAGO")
+            if cut > 0:
+                window2 = window2[:cut]
+            nums2 = [ _parse_number(n) for n in re.findall(r"([0-9]{1,3}(?:[.\s][0-9]{3})*,[0-9]{2})", window2) ]
+            nums2 = [n for n in nums2 if n > 0]
+            if len(nums2) >= 3:
+                out["total_presentado"] = nums2[0]
+                out["total_descuento"] = nums2[1]
+                out["saldo"] = nums2[2]
+        # Fallback por líneas: tomar los próximos 3 importes luego del bloque de títulos
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        idx = None
+        for i, ln in enumerate(lines):
+            if re.search(r"TOTAL\s+PRESENTADO\s*\$", ln, flags=re.IGNORECASE):
+                idx = i
+                break
+        if idx is not None:
+            nums: List[float] = []
+            for ln in lines[idx : min(len(lines), idx + 12)]:
+                for n in re.findall(r"([0-9]{1,3}(?:[.\s][0-9]{3})*,[0-9]{2})", ln):
+                    val = _parse_number(n)
+                    if val > 0:
+                        nums.append(val)
+            if len(nums) >= 3:
+                out["total_presentado"] = nums[0]
+                out["total_descuento"] = nums[1]
+                out["saldo"] = nums[2]
+        return out
+
+    def _infer_card_from_filename(name: str) -> Optional[str]:
+        n = name.upper()
+        if "AMEX" in n or "AMERICAN" in n:
+            return "TARJETA AMEX"
+        if "MASTERCARD" in n or "MASTER" in n:
+            return "TARJETA MASTERCARD"
+        if "VISA" in n:
+            return "TARJETA VISA"
+        return None
+
+    def _infer_period_from_filename(name: str) -> Optional[str]:
+        m = re.search(r"(20\d{2})[-_/](\d{2})[-_/](\d{2})", name)
+        if m:
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if 1 <= mo <= 12:
+                last_day = calendar.monthrange(y, mo)[1]
+                return f"{last_day:02d}-{mo:02d}-{y}"
+        m = re.search(r"(20\d{2})(\d{2})(\d{2})", name)
+        if m:
+            y, mo = int(m.group(1)), int(m.group(2))
+            if 1 <= mo <= 12:
+                last_day = calendar.monthrange(y, mo)[1]
+                return f"{last_day:02d}-{mo:02d}-{y}"
+        return None
+
+    for f in files:
+        if Path(f).suffix.lower() != ".pdf":
+            continue
+        try:
+            reader = PdfReader(f)
+        except Exception:
+            continue
+        fname = Path(f).name
+        page_texts: List[str] = []
+        for i, page in enumerate(reader.pages):
+            text = page.extract_text() or ""
+            page_texts.append(text)
+            next_head = ""
+            if i + 1 < len(reader.pages):
+                try:
+                    next_head = (reader.pages[i + 1].extract_text() or "")[:800]
+                except Exception:
+                    next_head = ""
+
+            if not totals["bank_nacion"]:
+                if re.search(r"\bBCO\s+DE\s+LA\s+NACION\s+ARGENTINA\b", text, flags=re.IGNORECASE) or re.search(
+                    r"\bBANCO\s+NACION\b", text, flags=re.IGNORECASE
+                ):
+                    totals["bank_nacion"] = True
+            if not totals["bank_patagonia"]:
+                if re.search(r"\bBANCO\s+PATAGONIA\b", text, flags=re.IGNORECASE):
+                    totals["bank_patagonia"] = True
+
+            if totals["bank_name"] is None:
+                m = re.search(r"Entidad\s+Pagadora\s*\n([A-Z0-9 .]+)", text, flags=re.IGNORECASE)
+                if m:
+                    totals["bank_name"] = m.group(1).strip()
+                else:
+                    m = re.search(r"\bBANCO\s+DE\s+LA\s+NACION\s+ARGENTINA\b", text, flags=re.IGNORECASE)
+                    if m:
+                        totals["bank_name"] = "BANCO DE LA NACION ARGENTINA"
+            if totals["bank_name"] is None and totals.get("bank_patagonia"):
+                totals["bank_name"] = "BANCO PATAGONIA S.A."
+
+            if totals["card_name"] is None:
+                m = re.search(r"\bTARJETA\s+DE\s+(DEBITO|CR[EÉ]DITO)[^\n]{0,30}\b", text, flags=re.IGNORECASE)
+                if m:
+                    totals["card_name"] = re.sub(r"\s+", " ", m.group(0)).strip()
+                else:
+                    m = re.search(r"\bTARJETA\s+DE\s+(DEBITO|CR[EÉ]DITO)\b", text, flags=re.IGNORECASE)
+                    if m:
+                        totals["card_name"] = re.sub(r"\s+", " ", m.group(0)).strip()
+            if totals["card_name"] is None and totals.get("bank_patagonia"):
+                totals["card_name"] = _infer_card_from_filename(fname)
+
+            if totals["period"] is None:
+                m = re.search(
+                    r"\b(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|SETIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\s+\d{4}\b",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+                if m:
+                    totals["period"] = re.sub(r"\s+", " ", m.group(0).upper()).strip()
+                else:
+                    m2 = re.search(r"\b(\d{2}/\d{2}/\d{4})\b", text)
+                    if m2:
+                        totals["period"] = m2.group(1)
+
+            # Encabezado: capturar importes alrededor de los labels y asignar por consistencia
+            if totals["total_presentado"] is None or totals["neto_header"] is None:
+                hdr_amounts = _extract_header_amounts(text)
+                if hdr_amounts:
+                    # Tomar los dos mayores como total/ neto (total >= neto)
+                    vals = sorted(set(hdr_amounts), reverse=True)
+                    if len(vals) >= 2:
+                        tp = vals[0]
+                        neto = vals[1]
+                        totals["total_presentado"] = totals["total_presentado"] or tp
+                        totals["neto_header"] = totals["neto_header"] or neto
+                    elif len(vals) == 1:
+                        if totals["total_presentado"] is None:
+                            totals["total_presentado"] = vals[0]
+
+            # Encabezado específico Patagonia
+            if totals.get("bank_patagonia"):
+                ph = _extract_patagonia_header(text)
+                if ph:
+                    totals["total_presentado"] = totals["total_presentado"] or ph.get("total_presentado")
+                    totals["total_descuento"] = totals.get("total_descuento") or ph.get("total_descuento")
+                    totals["saldo"] = totals.get("saldo") or ph.get("saldo")
+
+            # Totales diarios
+            ventas = _sum_matches(r"VENTAS\s*C[/ ]DESCUENTO\s*CONTADO\+?\s*\$?\s*([0-9\.\,]+)", text)
+            arancel = _sum_matches(r"ARANCEL-?\s*\$?\s*([0-9\.\,]+)", text)
+            iva = _sum_matches(r"IVA\s*CRED[^0-9]*\$?\s*([0-9\.\,]+)", text)
+            ret_iibb = _sum_matches(r"RETENCION\s*ING[^0-9]*\$?\s*([0-9\.\,]+)", text)
+            ret_iva = _sum_matches(r"(?:PERCEPCION|RETENCION)\s*IVA[^0-9]*\$?\s*([0-9\.\,]+)", text)
+            ret_gan = _sum_matches(r"RETENCION\s*GANANCIAS[^0-9]*\$?\s*([0-9\.\,]+)", text)
+            neto = _sum_matches(r"IMPORTE\s*NETO\s*DE\s*PAGOS\s*\$?\s*([0-9\.\,]+)", text)
+
+            if any(v > 0 for v in (ventas, arancel, iva, ret_iibb, ret_iva, ret_gan, neto)):
+                totals["has_daily"] = True
+                totals["ventas_sum"] += ventas
+                totals["arancel_sum"] += arancel
+                totals["iva_sum"] += iva
+                totals["ret_iibb_sum"] += ret_iibb
+                totals["ret_iva_sum"] += ret_iva
+                totals["ret_gan_sum"] += ret_gan
+                totals["neto_sum"] += neto
+
+            # Extraer filas diarias (bloques) solo si no es Banco Nación
+            if not totals.get("bank_nacion"):
+                for block in _extract_daily_blocks(text, next_head):
+                    row = _parse_daily_block(block)
+                    if row:
+                        key = tuple(sorted((row.get("concepts") or {}).items()))
+                        if "_seen_rows" not in totals:
+                            totals["_seen_rows"] = set()
+                        if key in totals["_seen_rows"]:
+                            continue
+                        totals["_seen_rows"].add(key)
+                        totals["daily_rows"].append(row)
+
+        # Para Banco Nación: reconstruir bloques en secuencia (más confiable)
+        if totals.get("bank_nacion"):
+            totals["daily_rows"] = _extract_blocks_sequential(page_texts)
+        # Para Patagonia: extraer desglose de descuentos
+        if totals.get("bank_patagonia"):
+            totals["patagonia_desglose"] = _extract_patagonia_desglose(page_texts)
+
+    totals.pop("_seen_rows", None)
+    if totals["bank_name"] is None and totals.get("bank_nacion"):
+        totals["bank_name"] = "BANCO DE LA NACION ARGENTINA"
+    if totals.get("bank_patagonia"):
+        if totals["bank_name"] is None:
+            totals["bank_name"] = "BANCO PATAGONIA S.A."
+        if totals.get("card_name") is None:
+            totals["card_name"] = _infer_card_from_filename(Path(files[0]).name)
+        if totals.get("period") is None:
+            totals["period"] = _infer_period_from_filename(Path(files[0]).name)
+    return totals
+
+
+def _extract_patagonia_desglose(page_texts: List[str]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    text = "\n".join(page_texts)
+    idx = text.upper().find("DESGLOSE DE DESCUENTOS")
+    if idx < 0:
+        return items
+    block = text[idx : idx + 2000]
+    # cortar en separador si aparece
+    sep = block.find("____")
+    if sep > 0:
+        block = block[:sep]
+    pending_label = ""
+    for ln in block.splitlines():
+        if "$" not in ln:
+            # guardar posibles etiquetas de sección para líneas con importe en la siguiente línea
+            clean = re.sub(r"\s+", " ", re.sub(r"[^A-Z0-9/%\s\.\-]", " ", ln.upper())).strip()
+            clean = re.sub(r"\s{2,}", " ", clean)
+            if clean and not clean.startswith("DESGLOSE"):
+                pending_label = clean
+            continue
+        if "U$S" in ln.upper():
+            continue
+        nums = re.findall(r"([0-9][0-9\.\,]*)", ln)
+        if not nums:
+            continue
+        amount = _parse_number(nums[-1])
+        if amount <= 0:
+            continue
+        label = re.sub(r"\s+", " ", re.sub(r"[^A-Z0-9/%\s\.\-]", " ", ln.upper())).strip()
+        label = re.sub(r"\b[0-9][0-9\.\,]*\b", "", label).strip()
+        label = re.sub(r"\s{2,}", " ", label)
+        if label in ("%", "TASA %") and pending_label:
+            label = pending_label
+        if label.startswith("TASA") and pending_label:
+            label = f"{pending_label} - {label}"
+        if label in ("%", "TASA %"):
+            continue
+        if label:
+            items.append({"label": label, "amount": amount})
+    # Si existe Base Imponible IVA, descartar Arancel Tj.Crédito (mismo importe)
+    has_base = any("BASE IMPONIBLE IVA" in it["label"] for it in items)
+    if has_base:
+        items = [
+            it
+            for it in items
+            if "ARANCEL TJ.C" not in it["label"]
+            and "ARANCEL TJ.D" not in it["label"]
+            and "CARGO POR SERVICIO" not in it["label"]
+        ]
+    return items
+
+
+def _extract_daily_blocks(text: str, next_head: str = "") -> List[str]:
+    blocks: List[str] = []
+    if not text:
+        return blocks
+    combined = text + ("\n" + next_head if next_head else "")
+    lines = [ln for ln in combined.splitlines() if ln.strip()]
+
+    # Anclar por "IMPORTE NETO DE PAGOS" y tomar ventana de líneas anteriores
+    neto_idxs = [i for i, ln in enumerate(lines) if re.search(r"IMPORTE\s*NETO\s*DE\s*PAGOS", ln, flags=re.IGNORECASE)]
+    for idx in neto_idxs:
+        start = max(0, idx - 12)
+        end = min(len(lines), idx + 3)
+        block = "\n".join(lines[start:end])
+        blocks.append(block)
+
+    # También anclar por "VENTAS..." por si hay bloques sin neto por OCR
+    ventas_idxs = [i for i, ln in enumerate(lines) if re.search(r"VENTAS\s*C[/ ]DESCUENTO\s*CONTADO", ln, flags=re.IGNORECASE)]
+    for idx in ventas_idxs:
+        start = max(0, idx - 2)
+        end = min(len(lines), idx + 10)
+        block = "\n".join(lines[start:end])
+        blocks.append(block)
+
+    # Deduplicar bloques
+    uniq: List[str] = []
+    seen = set()
+    for b in blocks:
+        key = b[:200]
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(b)
+    return uniq
+
+
+def _parse_daily_block(block: str) -> Optional[Dict[str, Any]]:
+    if not block:
+        return None
+    # extraer importes por línea, tomando el ÚLTIMO número de cada línea
+    lines_all = [ln.strip() for ln in block.splitlines() if ln.strip()]
+    if not lines_all:
+        return None
+
+    # limitar a las líneas del bloque de totales (entre VENTAS... e IMPORTE NETO...)
+    start_idx = None
+    end_idx = None
+    for i, ln in enumerate(lines_all):
+        if start_idx is None and re.search(r"VENTAS\s*C[/ ]DESCUENTO\s*CONTADO", ln, flags=re.IGNORECASE):
+            start_idx = i
+        if re.search(r"IMPORTE\s*NETO\s*DE\s*PAGOS", ln, flags=re.IGNORECASE):
+            end_idx = i
+            if start_idx is None:
+                start_idx = 0
+            break
+    if start_idx is None or end_idx is None or end_idx < start_idx:
+        return None
+    lines = lines_all[start_idx : end_idx + 1]
+
+    concept_map: Dict[str, float] = {}
+    def _canon_label(ln: str) -> Optional[str]:
+        t = re.sub(r"\s+", " ", ln.upper()).strip()
+        if "VENTAS C/DESCUENTO CONTADO" in t:
+            return "VENTAS C/DESCUENTO CONTADO"
+        if "ARANCEL" in t:
+            return "ARANCEL"
+        if "IVA CRED.FISC.COMERCIO S/ARANC" in t:
+            return "IVA CRED.FISC.COMERCIO S/ARANC 21,00%"
+        if "IVA RI SERV.OPER. INT." in t or "IVA RI SERV.OPER. INT" in t:
+            return "IVA RI SERV.OPER. INT."
+        if "SERVICIO OPER. INTERNAC" in t or "SERV.OPER. INT" in t:
+            return "SERVICIO OPER. INTERNAC."
+        if "RETENCION ING.BRUTOS SIRTAC" in t:
+            return "RETENCION ING.BRUTOS SIRTAC"
+        if "PERCEPCION IVA R.G. 2408" in t:
+            return "PERCEPCION IVA R.G. 2408 3,00 %"
+        if "QR PERCEPCION IVA 3337" in t:
+            return "QR PERCEPCION IVA 3337"
+        if "QR RETENCION IIBB RIO NEGRO" in t:
+            return "QR RETENCION IIBB RIO NEGRO"
+        if "IMPORTE NETO DE PAGOS" in t:
+            return "IMPORTE NETO DE PAGOS"
+        return None
+
+    for ln in lines:
+        if not re.search(r"\d", ln):
+            continue
+        # Solo líneas con $ y concepto válido
+        if "$" not in ln:
+            continue
+        label = _canon_label(ln)
+        if not label:
+            continue
+        nums = re.findall(r"([0-9][0-9\.\,]*)", ln)
+        if not nums:
+            continue
+        amount = _parse_number(nums[-1])
+        if amount <= 0:
+            continue
+        concept_map[label] = amount
+
+    if not concept_map:
+        return None
+
+    # Ya está filtrado por etiquetas canónicas
+
+    # fecha: priorizar "F. Pres", luego "el día", luego cualquier fecha dd/mm/yyyy
+    date_match = re.search(r"F\.\s*Pres\s*([0-9]{2}/[0-9]{2}/[0-9]{4})", block, flags=re.IGNORECASE)
+    if not date_match:
+        date_match = re.search(r"el\s+d[ií]a\s*([0-9]{2}/[0-9]{2}/[0-9]{4})", block, flags=re.IGNORECASE)
+    if not date_match:
+        dates = re.findall(r"([0-9]{2}/[0-9]{2}/[0-9]{4})", block)
+        date_match = None
+        if dates:
+            date_match = dates[-1]
+    fecha = date_match.group(1) if hasattr(date_match, "group") else (date_match or "")
+
+    return {
+        "fecha": fecha,
+        "concepts": concept_map,
+    }
+
+
+def _totals_from_daily_rows(daily_rows: List[Dict[str, Any]]) -> Dict[str, float]:
+    totals: Dict[str, float] = {}
+    for r in daily_rows:
+        concepts = r.get("concepts") or {}
+        for label, val in concepts.items():
+            totals[label] = totals.get(label, 0.0) + val
+    return totals
+
+
+def _build_output_from_daily_columns(daily_rows: List[Dict[str, Any]], neto_header: Optional[float] = None) -> str:
+    totals = _totals_from_daily_rows(daily_rows)
+    if not totals:
+        return ""
+    preferred = [
+        "VENTAS C/DESCUENTO CONTADO",
+        "ARANCEL",
+        "IVA CRED.FISC.COMERCIO S/ARANC 21,00%",
+        "RETENCION ING.BRUTOS SIRTAC",
+        "PERCEPCION IVA R.G. 2408 3,00 %",
+        "RETENCION IVA",
+        "RETENCION GANANCIAS",
+        "IMPORTE NETO DE PAGOS",
+    ]
+    cols = [c for c in preferred if c in totals] + sorted(c for c in totals if c not in preferred)
+    # Si el neto del encabezado existe y difiere, respetar neto y recalcular ventas para balancear
+    if neto_header is not None and "IMPORTE NETO DE PAGOS" in totals:
+        try:
+            neto_calc = float(totals.get("IMPORTE NETO DE PAGOS", 0.0))
+            if abs(neto_calc - float(neto_header)) > max(1.0, float(neto_header) * 0.002):
+                totals["IMPORTE NETO DE PAGOS"] = float(neto_header)
+                cargos_sum = 0.0
+                for k, v in totals.items():
+                    if k in ("VENTAS C/DESCUENTO CONTADO", "IMPORTE NETO DE PAGOS"):
+                        continue
+                    cargos_sum += float(v)
+                totals["VENTAS C/DESCUENTO CONTADO"] = float(neto_header) + cargos_sum
+        except Exception:
+            pass
+
+    lines: List[str] = []
+    for c in cols:
+        val = totals.get(c, 0.0)
+        t = c.upper()
+        if "VENTAS" in t:
+            out = abs(val)
+        else:
+            out = -abs(val)
+        lines.append(f"{c}|{out:.2f}")
+    return "\n".join(lines) + "\n"
+
+
+def _filter_daily_rows_for_bank_nacion(
+    daily_rows: List[Dict[str, Any]],
+    total_presentado: Optional[float],
+    neto_header: Optional[float],
+    log_path: Optional[Path],
+) -> List[Dict[str, Any]]:
+    if not daily_rows:
+        return daily_rows
+
+    def totals_for(rows: List[Dict[str, Any]]) -> Dict[str, float]:
+        t = _totals_from_daily_rows(rows)
+        return {
+            "ventas": float(t.get("VENTAS C/DESCUENTO CONTADO", 0.0)),
+            "neto": float(t.get("IMPORTE NETO DE PAGOS", 0.0)),
+        }
+
+    def close(a: float, b: float) -> bool:
+        return a > 0 and abs(a - b) <= max(1.0, b * 0.002)
+
+    base = totals_for(daily_rows)
+    ok_ventas = total_presentado is None or close(base["ventas"], float(total_presentado))
+    ok_neto = neto_header is None or close(base["neto"], float(neto_header))
+    if ok_ventas and ok_neto:
+        return daily_rows
+
+    # Filtro: solo bloques con ventas y neto (evita bloques parciales)
+    filtered = [
+        r
+        for r in daily_rows
+        if (r.get("concepts") or {}).get("VENTAS C/DESCUENTO CONTADO", 0.0) > 0
+        and (r.get("concepts") or {}).get("IMPORTE NETO DE PAGOS", 0.0) > 0
+    ]
+    if not filtered:
+        return daily_rows
+
+    base2 = totals_for(filtered)
+    ok_ventas2 = total_presentado is None or close(base2["ventas"], float(total_presentado))
+    ok_neto2 = neto_header is None or close(base2["neto"], float(neto_header))
+    if log_path:
+        _write_log(
+            log_path,
+            f"Filtro bloques parciales. Ventas {base['ventas']:.2f}->{base2['ventas']:.2f} "
+            f"Neto {base['neto']:.2f}->{base2['neto']:.2f}",
+        )
+    return filtered if (ok_ventas2 and ok_neto2) else daily_rows
+
+
+def _build_header_lines(bank: Optional[str], card: Optional[str], period: Optional[str]) -> str:
+    bank_s = (bank or "").strip()
+    card_s = (card or "").strip()
+    period_s = (period or "").strip()
+
+    # Convertir período "MES YYYY" a "dd/MM/YYYY" (último día del mes)
+    period_date = period_s
+    if period_s:
+        # Si ya viene en dd/mm/yyyy, respetarlo
+        if re.match(r"^\d{2}/\d{2}/\d{4}$", period_s):
+            period_date = period_s.replace("/", "-")
+        else:
+            m_num = re.match(r"^(\d{1,2})[/-](\d{4})$", period_s)
+            if m_num:
+                month = int(m_num.group(1))
+                year = int(m_num.group(2))
+                if 1 <= month <= 12:
+                    last_day = calendar.monthrange(year, month)[1]
+                    period_date = f"{last_day:02d}-{month:02d}-{year}"
+
+        m = re.match(
+            r"^(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|SETIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\s+(\d{4})$",
+            period_s,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            month_map = {
+                "ENERO": 1,
+                "FEBRERO": 2,
+                "MARZO": 3,
+                "ABRIL": 4,
+                "MAYO": 5,
+                "JUNIO": 6,
+                "JULIO": 7,
+                "AGOSTO": 8,
+                "SEPTIEMBRE": 9,
+                "SETIEMBRE": 9,
+                "OCTUBRE": 10,
+                "NOVIEMBRE": 11,
+                "DICIEMBRE": 12,
+            }
+            month = month_map.get(m.group(1).upper())
+            year = int(m.group(2))
+            if month:
+                last_day = calendar.monthrange(year, month)[1]
+                period_date = f"{last_day:02d}-{month:02d}-{year}"
+
+    # Concepto breve y claro, priorizando período
+    bank_short = bank_s
+    if re.search(r"BANCO\s+DE\s+LA\s+NACION\s+ARGENTINA", bank_s, flags=re.IGNORECASE):
+        bank_short = "BANCO NACION"
+    card_short = card_s.replace("TARJETA DE ", "").strip()
+    if not card_short:
+        card_short = card_s
+    concept = f"LIQ {period_date} {card_short} {bank_short}".strip()
+    concept = re.sub(r"\s+", " ", concept)
+    if len(concept) > 50:
+        concept = concept[:50].rstrip()
+
+    lines = [
+        bank_s,
+        card_s,
+        period_date,
+        concept,
+        "CONCEPTO|IMPORTE",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _write_daily_control_file(outdir: Path, base: str, ts: str, daily_rows: List[Dict[str, Any]], only_if_bank_nacion: bool) -> Optional[Path]:
+    if not daily_rows:
+        return None
+    if only_if_bank_nacion is False:
+        return None
+    path = outdir / f"{base}_{ts}_control_diarios.xls"
+
+    # columnas dinámicas: unión de conceptos por día
+    col_set = set()
+    for r in daily_rows:
+        for k in (r.get("concepts") or {}).keys():
+            col_set.add(k)
+    # orden preferido Banco Nación
+    preferred = [
+        "VENTAS C/DESCUENTO CONTADO",
+        "ARANCEL",
+        "IVA CRED.FISC.COMERCIO S/ARANC 21,00%",
+        "RETENCION ING.BRUTOS SIRTAC",
+        "PERCEPCION IVA R.G. 2408 3,00 %",
+        "RETENCION GANANCIAS",
+        "IMPORTE NETO DE PAGOS",
+    ]
+    cols = [c for c in preferred if c in col_set] + sorted(c for c in col_set if c not in preferred)
+
+    header = "LINEA\t" + "\t".join(cols) + "\tSUMA_CARGOS\tCHECK"
+    lines = [header]
+    totals: Dict[str, float] = {c: 0.0 for c in cols}
+    total_suma_cargos = 0.0
+    total_check = 0.0
+    for idx, r in enumerate(daily_rows, start=1):
+        row_vals = []
+        concepts = r.get("concepts") or {}
+        ventas = float(concepts.get("VENTAS C/DESCUENTO CONTADO", 0.0))
+        neto = float(concepts.get("IMPORTE NETO DE PAGOS", 0.0))
+        suma_cargos = 0.0
+        for c in cols:
+            val = concepts.get(c, 0.0)
+            totals[c] += val
+            row_vals.append(f"{val:.2f}")
+            if c not in ("VENTAS C/DESCUENTO CONTADO", "IMPORTE NETO DE PAGOS"):
+                suma_cargos += float(val)
+        check = ventas - (neto + suma_cargos)
+        total_suma_cargos += suma_cargos
+        total_check += check
+        lines.append(f"{idx}\t" + "\t".join(row_vals) + f"\t{suma_cargos:.2f}\t{check:.2f}")
+    lines.append(
+        "TOTAL\t"
+        + "\t".join(f"{totals[c]:.2f}" for c in cols)
+        + f"\t{total_suma_cargos:.2f}\t{total_check:.2f}"
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _parse_output_totals(text: str) -> Dict[str, float]:
+    totals = {
+        "TARJETA": 0.0,
+        "BANCO": 0.0,
+        "GASTO": 0.0,
+        "IVA_CREDITO": 0.0,
+        "RET_IVA": 0.0,
+        "RET_IIBB": 0.0,
+        "RET_GAN": 0.0,
+        "OTROS": 0.0,
+    }
+    for ln in text.splitlines():
+        if "|" not in ln:
+            continue
+        concept, total = ln.split("|", 1)
+        cat = _classify_concept_name(concept.strip())
+        if cat not in totals:
+            cat = "OTROS"
+        totals[cat] = _parse_number(total.strip())
+    return totals
+
+
+def _format_output_from_totals(totals: Dict[str, float]) -> str:
+    order = ["TARJETA", "BANCO", "GASTO", "IVA_CREDITO", "RET_IVA", "RET_IIBB", "RET_GAN", "OTROS"]
+    out_lines: List[str] = []
+    for cat in order:
+        val = totals.get(cat, 0.0)
+        if cat == "TARJETA":
+            val = abs(val)
+        elif cat == "OTROS":
+            val = float(f"{val:.2f}")
+        else:
+            val = -abs(val)
+        if abs(val) < 0.005:
+            val = 0.0
+        out_lines.append(f"{cat}|{val:.2f}")
+    return "\n".join(out_lines) + "\n"
+
+
+def _apply_pdf_overrides(text: str, pdf_totals: Dict[str, float], log_path: Optional[Path]) -> str:
+    totals = _parse_output_totals(text)
+    changed = False
+
+    has_daily = bool(pdf_totals.get("has_daily"))
+    ventas_sum = float(pdf_totals.get("ventas_sum") or 0.0)
+    arancel_sum = float(pdf_totals.get("arancel_sum") or 0.0)
+    iva_sum = float(pdf_totals.get("iva_sum") or 0.0)
+    ret_iva_sum = float(pdf_totals.get("ret_iva_sum") or 0.0)
+    ret_iibb_sum = float(pdf_totals.get("ret_iibb_sum") or 0.0)
+    ret_gan_sum = float(pdf_totals.get("ret_gan_sum") or 0.0)
+    neto_sum = float(pdf_totals.get("neto_sum") or 0.0)
+
+    total_presentado = pdf_totals.get("total_presentado")
+    neto_header = pdf_totals.get("neto_header")
+    bank_nacion = bool(pdf_totals.get("bank_nacion"))
+    bank_patagonia = bool(pdf_totals.get("bank_patagonia"))
+    header = _build_header_lines(pdf_totals.get("bank_name"), pdf_totals.get("card_name"), pdf_totals.get("period"))
+
+    # Banco Patagonia: usar desglose de descuentos sin XLS de control
+    if bank_patagonia and pdf_totals.get("patagonia_desglose"):
+        lines = []
+        tp = pdf_totals.get("total_presentado")
+        saldo = pdf_totals.get("saldo")
+        if tp is not None:
+            lines.append(f"TOTAL PRESENTADO|{float(tp):.2f}")
+        for it in pdf_totals["patagonia_desglose"]:
+            lines.append(f"{it['label']}|{-abs(float(it['amount'])):.2f}")
+        if saldo is not None:
+            lines.append(f"SALDO|{-abs(float(saldo)):.2f}")
+        if log_path and tp is None:
+            _write_log(log_path, "WARN: No se detectó TOTAL PRESENTADO en Patagonia.")
+        out_text = "\n".join(lines) + "\n"
+        if log_path:
+            _write_log(log_path, "Asiento Patagonia generado desde DESGLOSE DE DESCUENTOS.")
+        return header + out_text
+
+    # Si hay totales diarios bien formados, usar esos para el asiento (Banco Nación)
+    if bank_nacion and pdf_totals.get("daily_rows"):
+        rows = _filter_daily_rows_for_bank_nacion(
+            pdf_totals["daily_rows"],
+            pdf_totals.get("total_presentado"),
+            pdf_totals.get("neto_header"),
+            log_path,
+        )
+        out_text = _build_output_from_daily_columns(rows, pdf_totals.get("neto_header"))
+        if out_text:
+            if log_path:
+                _write_log(log_path, "Asiento generado desde columnas de totales diarios (Banco Nación).")
+            return header + out_text
+
+    if has_daily and arancel_sum > 0:
+        # Si el IVA viene inconsistente, recalcular como 21% del arancel.
+        iva_calc = round(arancel_sum * 0.21, 2)
+        if iva_sum <= 0 or abs(iva_sum - iva_calc) > 0.05:
+            iva_sum = iva_calc
+
+    # Priorizar totales diarios si existen
+    if has_daily and ventas_sum > 0:
+        if bank_nacion:
+            # Banco Nación: la línea "VENTAS C/DESCUENTO CONTADO" es el total presentado.
+            totals["TARJETA"] = ventas_sum
+        else:
+            totals["TARJETA"] = ventas_sum
+        changed = True
+    elif total_presentado is not None:
+        totals["TARJETA"] = float(total_presentado)
+        changed = True
+
+    if has_daily and neto_sum > 0:
+        totals["BANCO"] = neto_sum
+        changed = True
+    elif has_daily and ventas_sum > 0 and any(v > 0 for v in (arancel_sum, iva_sum, ret_iva_sum, ret_iibb_sum, ret_gan_sum)):
+        totals["BANCO"] = ventas_sum - (arancel_sum + iva_sum + ret_iva_sum + ret_iibb_sum + ret_gan_sum)
+        changed = True
+    elif neto_header is not None:
+        totals["BANCO"] = float(neto_header)
+        changed = True
+
+    if has_daily:
+        if arancel_sum > 0:
+            totals["GASTO"] = -arancel_sum
+            changed = True
+        if iva_sum > 0:
+            totals["IVA_CREDITO"] = -iva_sum
+            changed = True
+        if ret_iva_sum > 0:
+            totals["RET_IVA"] = -ret_iva_sum
+            changed = True
+        if ret_iibb_sum > 0:
+            totals["RET_IIBB"] = -ret_iibb_sum
+            changed = True
+        if ret_gan_sum > 0:
+            totals["RET_GAN"] = -ret_gan_sum
+            changed = True
+
+    if not changed:
+        return header + text
+
+    # Normalizar signos (TARJETA positiva, resto negativo) y recalcular OTROS para suma 0
+    norm = {
+        "TARJETA": abs(totals["TARJETA"]),
+        "BANCO": -abs(totals["BANCO"]),
+        "GASTO": -abs(totals["GASTO"]),
+        "IVA_CREDITO": -abs(totals["IVA_CREDITO"]),
+        "RET_IVA": -abs(totals["RET_IVA"]),
+        "RET_IIBB": -abs(totals["RET_IIBB"]),
+        "RET_GAN": -abs(totals["RET_GAN"]),
+    }
+    sum_except_otros = sum(norm.values())
+    # Si la suma es exacta, no forzar OTROS
+    if abs(sum_except_otros) < 0.01:
+        norm["OTROS"] = 0.0
+    else:
+        norm["OTROS"] = -sum_except_otros
+
+    if log_path:
+        _write_log(log_path, f"Overrides PDF aplicados. TARJETA={norm['TARJETA']:.2f} BANCO={norm['BANCO']:.2f}")
+        _write_log(log_path, f"Totales diarios: ventas={ventas_sum:.2f} arancel={arancel_sum:.2f} iva={iva_sum:.2f} ret_iva={ret_iva_sum:.2f} ret_iibb={ret_iibb_sum:.2f} ret_gan={ret_gan_sum:.2f} neto={neto_sum:.2f}")
+
+    return header + _format_output_from_totals(norm)
+
+
 def _ensure_writable_outdir(preferred: str) -> Path:
     """Devuelve un outdir escribible. Si falla, usa TEMP del sistema."""
     cand = Path(preferred or tempfile.gettempdir())
@@ -521,77 +1415,33 @@ def _ensure_outdir_preferred_or_fail(preferred: str) -> Path:
 # Prompt
 # ----------------------------
 DEFAULT_PROMPT = r"""
-Vas a analizar un PDF correspondiente a UNA liquidación de tarjeta de crédito o débito.
-El documento puede tener múltiples páginas.
+Vas a analizar una liquidación de tarjeta (débito o crédito) con varias páginas.
 
-Tu objetivo es DEVOLVER un archivo de texto con DOS columnas:
+Objetivo: devolver SOLO texto con 2 columnas: CONCEPTO|TOTAL
+
+Reglas clave:
+- La primer línea es el TOTAL PRESENTADO (importe positivo).
+- La línea BANCO es el NETO DE PAGOS / NETO A COBRAR / IMPORTE NETO / A ACREDITAR / LIQUIDADO / ACREDITADO.
+- Todas las demás líneas son importes negativos.
+- La suma de TODAS las líneas debe ser 0 (cero). Si faltan conceptos, completar con 0 o ajustar OTROS para cerrar.
+
+Cómo identificar montos (buscar sinónimos, ignorar ubicación):
+- TOTAL PRESENTADO: "Total presentado", "Total liquidación", "Total liq. tarjeta", "Importe total".
+- BANCO: "Neto de pagos", "Neto a cobrar", "Importe neto", "A acreditar", "Total liquidado", "A depositar", "Acreditado".
+- GASTO: "Arancel", "Comisión", "Gastos", "Cargo".
+- IVA CREDITO: "IVA créd.", "IVA crédito fiscal", "IVA s/arancel".
+- RET IVA: "Retención IVA", "Percepción IVA", "R.G. 2408".
+- RET IIBB: "Retención IIBB", "Ingresos Brutos", "SIRTAC", "IIBB".
+- RET GAN: "Retención Ganancias", "RG 830".
+- OTROS: cualquier ajuste o concepto no clasificado.
+
+Validaciones:
+- Si BANCO es mayor que TARJETA y no hay explicación, revisá si están invertidos.
+- Si no encontrás un concepto, poné 0.
+- Asegurá que la suma total sea 0 (ajustar OTROS si hace falta).
+
+Formato de salida OBLIGATORIO:
 CONCEPTO|TOTAL
-
-Reglas obligatorias:
-
-- La PRIMER línea debe ser el TOTAL PRESENTADO de la tarjeta (importe POSITIVO).
-- Todas las demás líneas deben ser importes NEGATIVOS.
-- La suma total de todos los importes debe ser 0.
-
-Los conceptos a devolver son:
-
-1. Nombre de la tarjeta - TOTAL PRESENTADO
-2. Nombre del banco - TOTAL LIQUIDADO / ACREDITADO
-3. Gastos de tarjeta / comisiones
-4. IVA Crédito Fiscal (solo IVA del gasto)
-5. Retenciones / Percepciones de IVA
-6. Retenciones / Percepciones de Ingresos Brutos
-7. Retenciones / Percepciones de Ganancias
-8. Otros conceptos (si existen)
-
-ACLARACIONES IMPORTANTES:
-
-- El IVA Crédito Fiscal corresponde EXCLUSIVAMENTE
-  al IVA aplicado sobre COMISIONES / GASTOS de tarjeta.
-- NUNCA usar retenciones o percepciones de IVA
-  como IVA Crédito Fiscal.
-- Si un concepto no se identifica claramente,
-  devolver su total como 0.
-
-Formato de salida OBLIGATORIO (sin texto adicional):
-
-CONCEPTO|TOTAL
-
-IMPORTANTE:
-- El concepto de la PRIMER línea debe incluir la palabra TARJETA.
-- El concepto de la línea del banco debe incluir la palabra BANCO.
-- El concepto de gastos debe incluir la palabra GASTO o COMISION.
-- El concepto de IVA Crédito Fiscal debe incluir las palabras IVA y CREDITO.
-- El concepto de retenciones de IVA debe incluir las palabras IVA y RET.
-- El concepto de retenciones de IIBB debe incluir IIBB o INGRESOS.
-- El concepto de retenciones de Ganancias debe incluir GANANCIAS.
-- El concepto de otros debe incluir la palabra OTROS.
-
-CONTROL ADICIONAL (OPCIONAL):
-
-Algunas liquidaciones contienen, al final de cada día,
-un resumen con totales diarios como por ejemplo:
-- Ventas con descuento contado
-- Arancel
-- IVA Crédito Fiscal
-- Retenciones / Percepciones
-- Importe Neto de Pagos
-
-Si el PDF contiene estos totales diarios:
-
-- Sumá los importes de TODOS los días.
-- Agregá una sección adicional al final del archivo
-  llamada EXACTAMENTE:
-
-CONTROL_TOTALES_DIARIOS
-
-- En esa sección, devolvé dos columnas:
-  CONCEPTO|TOTAL
-
-- NO modifiques ni recalcules el resumen principal.
-- NO inventes conceptos que no existan.
-- Si el PDF NO contiene totales diarios,
-  NO agregues esta sección.
 """
 
 
@@ -805,6 +1655,8 @@ def main() -> None:
                 if not Path(f).exists():
                     raise SystemExit(f"ERROR: No existe el archivo: {f}")
 
+            pdf_totals = _extract_pdf_totals(args.files)
+
             # Auto-ajuste según páginas reales (si se puede leer el PDF).
             if args.auto:
                 effective_pages = 0
@@ -941,6 +1793,7 @@ def main() -> None:
                     data = run_units(retry_units, "Reintento por página")
 
             data = _postprocess_output(str(data))
+            data = _apply_pdf_overrides(data, pdf_totals, Path(result["log_path"]) if result.get("log_path") else None)
 
             status("Guardando TXT...")
             out_path = Path(outdir) / f"{base}_{ts}.txt"
@@ -954,6 +1807,16 @@ def main() -> None:
                 out_path = Path(outdir) / f"{base}_{ts}.txt"
                 out_path.write_text(str(data).strip() + "\n", encoding="utf-8")
             _write_log(log_path, f"Salida generada: {out_path}")
+
+            control_path = _write_daily_control_file(
+                outdir,
+                base,
+                ts,
+                pdf_totals.get("daily_rows") or [],
+                bool(pdf_totals.get("bank_nacion")),
+            )
+            if control_path:
+                _write_log(log_path, f"Control diario generado: {control_path}")
 
             result["out_path"] = str(out_path)
             status("Listo")
