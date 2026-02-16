@@ -130,3 +130,5 @@ Con PyInstaller:
 pyinstaller --onefile --noconsole lector_facturas_to_json_v5.py
 pyinstaller --onefile --noconsole lector_liquidaciones_to_json_v1.py
 ```
+
+ 
