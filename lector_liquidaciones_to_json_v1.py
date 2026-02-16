@@ -632,13 +632,36 @@ def _extract_pdf_totals(files: List[str]) -> Dict[str, float]:
 
     def _infer_card_from_filename(name: str) -> Optional[str]:
         n = name.upper()
+        if "CABAL" in n:
+            return "TARJETA CABAL"
         if "AMEX" in n or "AMERICAN" in n:
             return "TARJETA AMEX"
         if "MASTERCARD" in n or "MASTER" in n:
             return "TARJETA MASTERCARD"
         if "VISA" in n:
             return "TARJETA VISA"
+        if "NARANJA" in n:
+            return "TARJETA NARANJA"
         return None
+
+    def _infer_card_from_text(text: str) -> Optional[str]:
+        up = (text or "").upper()
+        if re.search(r"\bCABAL\b", up):
+            return "TARJETA CABAL"
+        if re.search(r"\bAMEX\b|\bAMERICAN\s+EXPRESS\b", up):
+            return "TARJETA AMEX"
+        if re.search(r"\bMASTERCARD\b|\bMASTER\b", up):
+            return "TARJETA MASTERCARD"
+        if re.search(r"\bVISA\b", up):
+            return "TARJETA VISA"
+        if re.search(r"\bNARANJA\b", up):
+            return "TARJETA NARANJA"
+        return None
+
+    def _is_generic_card_label(card: Optional[str]) -> bool:
+        if not card:
+            return False
+        return bool(re.fullmatch(r"\s*TARJETA\s+DE\s+(?:DEBITO|CR[EÉ]DITO)(?:\s+.*)?\s*", card, flags=re.IGNORECASE))
 
     def _infer_period_from_filename(name: str) -> Optional[str]:
         m = re.search(r"(20\d{2})[-_/](\d{2})[-_/](\d{2})", name)
@@ -694,6 +717,8 @@ def _extract_pdf_totals(files: List[str]) -> Dict[str, float]:
             if totals["bank_name"] is None and totals.get("bank_patagonia"):
                 totals["bank_name"] = "BANCO PATAGONIA S.A."
 
+            card_by_brand = _infer_card_from_text(text) or _infer_card_from_filename(fname)
+
             if totals["card_name"] is None:
                 m = re.search(r"\bTARJETA\s+DE\s+(DEBITO|CR[EÉ]DITO)[^\n]{0,30}\b", text, flags=re.IGNORECASE)
                 if m:
@@ -702,8 +727,9 @@ def _extract_pdf_totals(files: List[str]) -> Dict[str, float]:
                     m = re.search(r"\bTARJETA\s+DE\s+(DEBITO|CR[EÉ]DITO)\b", text, flags=re.IGNORECASE)
                     if m:
                         totals["card_name"] = re.sub(r"\s+", " ", m.group(0)).strip()
-            if totals["card_name"] is None and totals.get("bank_patagonia"):
-                totals["card_name"] = _infer_card_from_filename(fname)
+
+            if card_by_brand and (totals["card_name"] is None or _is_generic_card_label(totals["card_name"])):
+                totals["card_name"] = card_by_brand
 
             if totals["period"] is None:
                 m = re.search(
@@ -783,13 +809,12 @@ def _extract_pdf_totals(files: List[str]) -> Dict[str, float]:
     totals.pop("_seen_rows", None)
     if totals["bank_name"] is None and totals.get("bank_nacion"):
         totals["bank_name"] = "BANCO DE LA NACION ARGENTINA"
-    if totals.get("bank_patagonia"):
-        if totals["bank_name"] is None:
-            totals["bank_name"] = "BANCO PATAGONIA S.A."
-        if totals.get("card_name") is None:
-            totals["card_name"] = _infer_card_from_filename(Path(files[0]).name)
-        if totals.get("period") is None:
-            totals["period"] = _infer_period_from_filename(Path(files[0]).name)
+    if totals.get("bank_patagonia") and totals["bank_name"] is None:
+        totals["bank_name"] = "BANCO PATAGONIA S.A."
+    if totals.get("card_name") is None and files:
+        totals["card_name"] = _infer_card_from_filename(Path(files[0]).name)
+    if totals.get("period") is None and totals.get("bank_patagonia") and files:
+        totals["period"] = _infer_period_from_filename(Path(files[0]).name)
     return totals
 
 
