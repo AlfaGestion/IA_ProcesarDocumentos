@@ -1159,12 +1159,12 @@ def _build_header_lines(bank: Optional[str], card: Optional[str], period: Option
     return "\n".join(lines) + "\n"
 
 
-def _write_daily_control_file(outdir: Path, base: str, ts: str, daily_rows: List[Dict[str, Any]], only_if_bank_nacion: bool) -> Optional[Path]:
+def _write_daily_control_file(outdir: Path, source_stem: str, daily_rows: List[Dict[str, Any]], only_if_bank_nacion: bool) -> Optional[Path]:
     if not daily_rows:
         return None
     if only_if_bank_nacion is False:
         return None
-    path = outdir / f"{base}_{ts}_control_diarios.xls"
+    path = outdir / f"{source_stem}.xls"
 
     # columnas dinámicas: unión de conceptos por día
     col_set = set()
@@ -1720,13 +1720,19 @@ def main() -> None:
 
             status("Preparando salida...")
             base = safe_basename(args.files[0])
+            source_stem = Path(args.files[0]).stem
             ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
             requested_outdir = _normalize_outdir_arg(args.outdir)
             if requested_outdir:
                 outdir = _ensure_outdir_preferred_or_fail(requested_outdir)
             else:
                 outdir = _ensure_writable_outdir_with_file_fallback("", args.files[0])
-            log_path = Path(outdir) / f"{base}_{ts}_log.txt"
+            src_log_name = Path(args.files[0]).with_suffix(".log").name
+            log_path = Path(outdir) / src_log_name
+            try:
+                log_path.unlink(missing_ok=True)
+            except Exception:
+                pass
             result["log_path"] = str(log_path)
             _write_log(log_path, f"Inicio proceso. Archivos: {', '.join(args.files)}")
 
@@ -1832,7 +1838,7 @@ def main() -> None:
             data = _apply_pdf_overrides(data, pdf_totals, Path(result["log_path"]) if result.get("log_path") else None)
 
             status("Guardando TXT...")
-            out_path = Path(outdir) / f"{base}.txt"
+            out_path = Path(outdir) / f"{source_stem}.txt"
             try:
                 out_path.write_text(str(data).strip() + "\n", encoding="utf-8")
             except Exception:
@@ -1840,14 +1846,13 @@ def main() -> None:
                     raise SystemExit(f"ERROR: No se pudo guardar el TXT en outdir solicitado: {requested_outdir}")
                 # fallback: carpeta del archivo de entrada; último recurso TEMP
                 outdir = _ensure_writable_outdir_with_file_fallback("", args.files[0])
-                out_path = Path(outdir) / f"{base}.txt"
+                out_path = Path(outdir) / f"{source_stem}.txt"
                 out_path.write_text(str(data).strip() + "\n", encoding="utf-8")
             _write_log(log_path, f"Salida generada: {out_path}")
 
             control_path = _write_daily_control_file(
                 outdir,
-                base,
-                ts,
+                source_stem,
                 pdf_totals.get("daily_rows") or [],
                 bool(pdf_totals.get("bank_nacion")),
             )
