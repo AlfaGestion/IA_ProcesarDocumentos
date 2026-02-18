@@ -226,6 +226,16 @@ def _ensure_list(x: Any) -> list:
     return x if isinstance(x, list) else []
 
 
+def _normalize_outdir_arg(raw: str) -> str:
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if len(s) >= 2 and ((s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")):
+        s = s[1:-1].strip()
+    s = s.rstrip(" '\"")
+    return s
+
+
 # ----------------------------
 # Esquema esperado
 # ----------------------------
@@ -925,7 +935,7 @@ def main() -> None:
                     raise SystemExit(f"ERROR: No existe el archivo: {f}")
 
             status("Preparando salida...")
-            outdir = args.outdir.strip() or tempfile.gettempdir()
+            outdir = _normalize_outdir_arg(args.outdir) or tempfile.gettempdir()
             Path(outdir).mkdir(parents=True, exist_ok=True)
 
             status("Cargando prompt...")
@@ -1008,8 +1018,7 @@ def main() -> None:
 
             status("Guardando JSON...")
             base = safe_basename(args.files[0])
-            ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-            out_path = Path(outdir) / f"{base}_{ts}.json"
+            out_path = Path(outdir) / f"{base}.json"
             out_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
             result["out_path"] = str(out_path)

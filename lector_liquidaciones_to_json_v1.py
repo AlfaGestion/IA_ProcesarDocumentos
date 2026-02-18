@@ -1393,8 +1393,19 @@ def _ensure_writable_outdir(preferred: str) -> Path:
             return Path(".")
 
 
+def _normalize_outdir_arg(raw: str) -> str:
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if len(s) >= 2 and ((s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")):
+        s = s[1:-1].strip()
+    s = s.rstrip(" '\"")
+    return s
+
+
 def _ensure_writable_outdir_with_file_fallback(preferred: str, first_input_file: str) -> Path:
     """Prioriza outdir solicitado; si no se puede, usa carpeta del archivo fuente; último recurso TEMP."""
+    preferred = _normalize_outdir_arg(preferred)
     # 1) Intentar outdir solicitado (si viene por parámetro)
     if preferred and preferred.strip():
         cand = Path(preferred.strip())
@@ -1423,7 +1434,7 @@ def _ensure_writable_outdir_with_file_fallback(preferred: str, first_input_file:
 
 
 def _ensure_outdir_preferred_or_fail(preferred: str) -> Path:
-    cand = Path((preferred or "").strip())
+    cand = Path(_normalize_outdir_arg(preferred))
     if not str(cand):
         raise SystemExit("ERROR: outdir solicitado vacío.")
     try:
@@ -1710,7 +1721,7 @@ def main() -> None:
             status("Preparando salida...")
             base = safe_basename(args.files[0])
             ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-            requested_outdir = args.outdir.strip()
+            requested_outdir = _normalize_outdir_arg(args.outdir)
             if requested_outdir:
                 outdir = _ensure_outdir_preferred_or_fail(requested_outdir)
             else:
@@ -1821,7 +1832,7 @@ def main() -> None:
             data = _apply_pdf_overrides(data, pdf_totals, Path(result["log_path"]) if result.get("log_path") else None)
 
             status("Guardando TXT...")
-            out_path = Path(outdir) / f"{base}_{ts}.txt"
+            out_path = Path(outdir) / f"{base}.txt"
             try:
                 out_path.write_text(str(data).strip() + "\n", encoding="utf-8")
             except Exception:
@@ -1829,7 +1840,7 @@ def main() -> None:
                     raise SystemExit(f"ERROR: No se pudo guardar el TXT en outdir solicitado: {requested_outdir}")
                 # fallback: carpeta del archivo de entrada; último recurso TEMP
                 outdir = _ensure_writable_outdir_with_file_fallback("", args.files[0])
-                out_path = Path(outdir) / f"{base}_{ts}.txt"
+                out_path = Path(outdir) / f"{base}.txt"
                 out_path.write_text(str(data).strip() + "\n", encoding="utf-8")
             _write_log(log_path, f"Salida generada: {out_path}")
 
