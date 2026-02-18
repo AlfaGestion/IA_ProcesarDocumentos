@@ -28,6 +28,8 @@ from typing import Iterable, List, Tuple
 
 # Extensiones soportadas actualmente por ambos scripts lectores.
 SUPPORTED_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
+PROC_SUBDIR_NAME = "PROC_AGENTE_IA"
+RETENTION_DAYS = 7
 
 
 def _now() -> str:
@@ -37,6 +39,21 @@ def _now() -> str:
 def _write_log(log_path: Path, lines: Iterable[str]) -> None:
     text = "\n".join(lines).rstrip() + "\n"
     log_path.write_text(text, encoding="utf-8", errors="replace")
+
+
+def _load_dotenv_file(dotenv_path: Path) -> None:
+    """Carga variables desde .env solo si no existen en el entorno actual."""
+    if not dotenv_path.exists() or not dotenv_path.is_file():
+        return
+    for raw_line in dotenv_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and os.getenv(key) is None:
+            os.environ[key] = value
 
 
 def _iter_root_files(folder: Path) -> List[Path]:
@@ -50,13 +67,31 @@ def _iter_root_files(folder: Path) -> List[Path]:
     return files
 
 
-def _run_reader(reader_script: Path, src_file: Path) -> Tuple[bool, str]:
+def _cleanup_old_files(folder: Path, days: int = RETENTION_DAYS) -> int:
+    if not folder.exists() or not folder.is_dir():
+        return 0
+    cutoff = dt.datetime.now().timestamp() - (days * 24 * 60 * 60)
+    deleted = 0
+    for p in folder.iterdir():
+        if not p.is_file():
+            continue
+        try:
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+                deleted += 1
+        except Exception:
+            # No corta el proceso por fallos de limpieza puntuales.
+            continue
+    return deleted
+
+
+def _run_reader(reader_script: Path, src_file: Path, outdir: Path) -> Tuple[bool, str]:
     cmd = [
         sys.executable,
         str(reader_script),
         str(src_file),
         "--outdir",
-        str(src_file.parent),
+        str(outdir),
     ]
     proc = subprocess.run(
         cmd,
@@ -77,19 +112,24 @@ def _process_folder(folder: Path, reader_script: Path, label: str) -> Tuple[int,
     processed = 0
     skipped = 0
     errors = 0
+    proc_dir = folder / PROC_SUBDIR_NAME
+    proc_dir.mkdir(parents=True, exist_ok=True)
+    deleted = _cleanup_old_files(proc_dir, RETENTION_DAYS)
 
     files = _iter_root_files(folder)
     print(f"[{_now()}] {label}: encontrados {len(files)} archivos en {folder}")
+    if deleted:
+        print(f"[{_now()}] {label}: limpieza en {proc_dir.name}, eliminados {deleted} archivos (> {RETENTION_DAYS} dias)")
 
     for src_file in files:
-        log_path = src_file.with_suffix(".log")
+        log_path = proc_dir / f"{src_file.name}.log"
         if log_path.exists():
             skipped += 1
             print(f"[{_now()}] {label}: SKIP {src_file.name} (ya existe {log_path.name})")
             continue
 
         print(f"[{_now()}] {label}: PROCESANDO {src_file.name}")
-        ok, output = _run_reader(reader_script, src_file)
+        ok, output = _run_reader(reader_script, src_file, proc_dir)
         processed += 1
 
         if ok:
@@ -100,6 +140,7 @@ def _process_folder(folder: Path, reader_script: Path, label: str) -> Tuple[int,
                     f"TIMESTAMP={_now()}",
                     f"READER={reader_script.name}",
                     f"FILE={src_file}",
+                    f"OUTPUT_DIR={proc_dir}",
                     f"MESSAGE=Procesado correctamente",
                     "OUTPUT_BEGIN",
                     output if output else "(sin salida)",
@@ -116,6 +157,7 @@ def _process_folder(folder: Path, reader_script: Path, label: str) -> Tuple[int,
                     f"TIMESTAMP={_now()}",
                     f"READER={reader_script.name}",
                     f"FILE={src_file}",
+                    f"OUTPUT_DIR={proc_dir}",
                     f"MESSAGE=Error durante el procesamiento",
                     "OUTPUT_BEGIN",
                     output if output else "(sin detalle de error)",
@@ -128,17 +170,19 @@ def _process_folder(folder: Path, reader_script: Path, label: str) -> Tuple[int,
 
 
 def main() -> int:
+    project_dir = Path(__file__).resolve().parent
+    _load_dotenv_file(project_dir / ".env")
+
     ruta_cliente = os.getenv("RUTA_CLIENTE", "").strip()
     if not ruta_cliente:
         print("ERROR: falta variable de entorno RUTA_CLIENTE.")
-        print(r"Ejemplo PowerShell: $env:RUTA_CLIENTE='H:\Mi unidad\CLIENTES\OLIVA'")
+        print(r"Definila en .env (RUTA_CLIENTE=...) o en entorno de PowerShell.")
         return 2
 
     base = Path(ruta_cliente)
     tarjetas_dir = base / "TARJETAS"
     compras_dir = base / "COMPRAS"
 
-    project_dir = Path(__file__).resolve().parent
     reader_tarjetas = project_dir / "lector_liquidaciones_to_json_v1.py"
     reader_compras = project_dir / "lector_facturas_to_json_v5.py"
 
