@@ -616,6 +616,27 @@ def validate_totals_integrity(data: dict, tolerance: float = 0.03) -> None:
     except Exception:
         return
 
+def needs_model_fallback(data: dict) -> tuple[bool, str]:
+    """Decide si conviene reintentar con un modelo mas fuerte."""
+    try:
+        rows = _ensure_list(data.get("ROWS"))
+        rows_count = sum(1 for r in rows if isinstance(r, dict))
+        if rows_count == 0:
+            return True, "Sin filas detectadas"
+
+        meta = _ensure_object(data.get("meta"))
+        exp = _parse_expected_items(meta)
+        if exp is not None and rows_count < exp:
+            return True, f"Filas detectadas {rows_count} < items esperados {exp}"
+
+        obs = str(meta.get("observaciones") or "")
+        if "ADVERTENCIA: suma de ROWS.Total" in obs:
+            return True, "Desvio alto entre suma de filas y totales"
+
+        return False, ""
+    except Exception:
+        return False, ""
+
 def merge_data_keep_best(datas: List[dict]) -> dict:
     """Merge multiple page-level results into a single invoice.
     - CAB: keep first non-empty per key
@@ -859,6 +880,16 @@ def main() -> None:
     parser.add_argument("--outdir", default="", help="Carpeta de salida. Default: TEMP del sistema")
     parser.add_argument("--prompt-file", default="", help="Archivo .txt con prompt personalizado")
     parser.add_argument("--model", default="gpt-4.1-mini", help="Modelo a usar (default: gpt-4.1-mini)")
+    parser.add_argument(
+        "--fallback-model",
+        default="gpt-4.1",
+        help="Modelo de reintento si --model no alcanza (default: gpt-4.1).",
+    )
+    parser.add_argument(
+        "--no-fallback",
+        action="store_true",
+        help="Desactiva reintento automatico con --fallback-model.",
+    )
     parser.add_argument("--gui", action="store_true", help="Muestra ventana de progreso (no altera stdout)")
     parser.add_argument(
         "--per-page",
@@ -957,9 +988,9 @@ def main() -> None:
             log("Motor IA: Activo")
             client = OpenAI(api_key=api_key)
 
-            def call_model(content_blocks: List[Dict[str, Any]]) -> dict:
+            def call_model(content_blocks: List[Dict[str, Any]], model_name: str) -> dict:
                 resp = client.responses.create(
-                    model=args.model,
+                    model=model_name,
                     max_output_tokens=16000,  # tablas largas
                     input=[{"role": "user", "content": content_blocks}],
                     text={"format": {"type": "json_object"}},
@@ -989,32 +1020,52 @@ def main() -> None:
                 infer_orden_columnas(data)
                 return data
 
-            if args.per_page and len(args.files) > 1:
-                page_results: List[dict] = []
-                total_files = len(args.files)
-                t_pages_start = time.time()
-                for i, f in enumerate(args.files, start=1):
-                    # ETA aproximado basado en promedio por página procesada
-                    if i > 1:
-                        elapsed = time.time() - t_pages_start
-                        avg = elapsed / (i - 1)
-                        remaining = avg * (total_files - i + 1)
-                        mm = int(remaining // 60)
-                        ss = int(remaining % 60)
-                        status(f"IA por pagina {i}/{total_files}... (ETA ~{mm:02d}:{ss:02d})")
-                    else:
-                        status(f"IA por pagina {i}/{total_files}...")
-                    log(f"Archivo: {f}")
-                    page_content = [{"type": "input_text", "text": prompt}]
-                    page_content.extend(file_to_content_blocks(f, args.tile))
-                    page_results.append(call_model(page_content))
-                data = merge_data_keep_best(page_results)
-            else:
-                data = call_model(content)
+            def run_extraction(model_name: str) -> dict:
+                if args.per_page and len(args.files) > 1:
+                    page_results: List[dict] = []
+                    total_files = len(args.files)
+                    t_pages_start = time.time()
+                    for i, f in enumerate(args.files, start=1):
+                        # ETA aproximado basado en promedio por p?gina procesada
+                        if i > 1:
+                            elapsed = time.time() - t_pages_start
+                            avg = elapsed / (i - 1)
+                            remaining = avg * (total_files - i + 1)
+                            mm = int(remaining // 60)
+                            ss = int(remaining % 60)
+                            status(f"IA por pagina {i}/{total_files}... (ETA ~{mm:02d}:{ss:02d})")
+                        else:
+                            status(f"IA por pagina {i}/{total_files}...")
+                        log(f"Archivo: {f}")
+                        page_content = [{"type": "input_text", "text": prompt}]
+                        page_content.extend(file_to_content_blocks(f, args.tile))
+                        page_results.append(call_model(page_content, model_name))
+                    data_model = merge_data_keep_best(page_results)
+                else:
+                    data_model = call_model(content, model_name)
 
-            data["ROWS"] = dedupe_rows(_ensure_list(data.get("ROWS")))
-            adjust_importe_lista_for_bultos(data)
-            validate_totals_integrity(data, tolerance=0.03)
+                data_model["ROWS"] = dedupe_rows(_ensure_list(data_model.get("ROWS")))
+                adjust_importe_lista_for_bultos(data_model)
+                validate_totals_integrity(data_model, tolerance=0.03)
+                return data_model
+
+            log(f"Intento 1 con modelo: {args.model}")
+            data = run_extraction(args.model)
+
+            fallback_enabled = (not args.no_fallback) and ("mini" in args.model.lower())
+            if fallback_enabled and args.fallback_model and args.fallback_model != args.model:
+                should_retry, reason = needs_model_fallback(data)
+                if should_retry:
+                    status("Reintentando con modelo alternativo...")
+                    log(f"Fallback activado: {reason}")
+                    log(f"Intento 2 con modelo: {args.fallback_model}")
+                    retry_data = run_extraction(args.fallback_model)
+                    retry_bad, _ = needs_model_fallback(retry_data)
+                    if retry_bad:
+                        log("Fallback ejecutado, pero se conserva resultado original por no mejorar calidad.")
+                    else:
+                        data = retry_data
+                        log("Fallback OK: se usa resultado del modelo alternativo.")
 
             status("Guardando JSON...")
             base = safe_basename(args.files[0])
