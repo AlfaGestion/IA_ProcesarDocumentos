@@ -25,7 +25,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 
 # Extensiones soportadas actualmente por ambos scripts lectores.
@@ -74,21 +74,31 @@ def _load_dotenv_file(dotenv_path: Path) -> None:
             os.environ[key] = value
 
 
+def _split_env_paths(raw: str) -> List[str]:
+    if not raw:
+        return []
+    unified = raw.replace("\r", ";").replace("\n", ";")
+    parts = []
+    for piece in unified.split(";"):
+        p = piece.strip().strip('"').strip("'").strip()
+        if not p:
+            continue
+        parts.append(p)
+    return parts
+
+
 def _parse_client_paths() -> List[Path]:
-    rutas_cliente = os.getenv("RUTAS_CLIENTE", "").strip()
-    ruta_cliente = os.getenv("RUTA_CLIENTE", "").strip()
+    rutas_cliente = os.getenv("RUTAS_CLIENTE", "")
+    ruta_cliente = os.getenv("RUTA_CLIENTE", "")
 
     raw_paths: List[str] = []
-    if rutas_cliente:
-        raw_paths.extend(part.strip() for part in rutas_cliente.split(";") if part.strip())
-    if ruta_cliente:
-        raw_paths.append(ruta_cliente)
+    raw_paths.extend(_split_env_paths(rutas_cliente))
+    raw_paths.extend(_split_env_paths(ruta_cliente))
 
     unique_paths: List[Path] = []
     seen: set[str] = set()
     for raw in raw_paths:
-        norm = str(Path(raw).resolve())
-        key = norm.lower()
+        key = os.path.normcase(os.path.normpath(raw))
         if key in seen:
             continue
         seen.add(key)
@@ -201,11 +211,22 @@ def _run_reader(reader_script: Path, src_file: Path, outdir: Path) -> Tuple[bool
     return ok, merged
 
 
+def _read_status_from_log(log_path: Path) -> Optional[str]:
+    try:
+        for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("STATUS="):
+                return line.split("=", 1)[1].strip().upper()
+    except Exception:
+        return None
+    return None
+
+
 def _process_folder(
     folder: Path,
     reader_script: Path,
     label: str,
     stable_seconds: int,
+    force_reprocess: bool,
 ) -> Tuple[int, int, int, int, List[str]]:
     processed = 0
     skipped = 0
@@ -226,10 +247,19 @@ def _process_folder(
     for src_file in files:
         log_path = proc_dir / f"{src_file.name}.log"
         if log_path.exists():
-            skipped += 1
-            print(f"[{_now()}] {label}: SKIP {src_file.name} (ya existe {log_path.name})")
-            events.append(f"[{_now()}] {label}|SKIP|{src_file.name}|YaProcesadoLog={log_path.name}")
-            continue
+            if force_reprocess:
+                print(f"[{_now()}] {label}: REPROCESAR {src_file.name} (ignora {log_path.name})")
+                events.append(f"[{_now()}] {label}|REPROCESS|{src_file.name}|IgnoraLog={log_path.name}")
+            else:
+                prev_status = _read_status_from_log(log_path)
+                if prev_status == "ERROR":
+                    print(f"[{_now()}] {label}: REINTENTO {src_file.name} (log previo en ERROR)")
+                    events.append(f"[{_now()}] {label}|RETRY|{src_file.name}|PrevStatus=ERROR")
+                else:
+                    skipped += 1
+                    print(f"[{_now()}] {label}: SKIP {src_file.name} (ya existe {log_path.name})")
+                    events.append(f"[{_now()}] {label}|SKIP|{src_file.name}|YaProcesadoLog={log_path.name}")
+                    continue
 
         if not _is_file_stable(src_file, stable_seconds):
             not_ready += 1
@@ -290,6 +320,7 @@ def main() -> int:
     _load_dotenv_file(project_dir / ".env")
     stable_seconds = int(os.getenv("ARCHIVO_ESTABLE_SEGUNDOS", str(FILE_STABLE_SECONDS)) or FILE_STABLE_SECONDS)
     lock_stale_hours = int(os.getenv("LOCK_STALE_HORAS", str(LOCK_STALE_HOURS)) or LOCK_STALE_HOURS)
+    force_reprocess = os.getenv("REPROCESAR_TODO", "0").strip().lower() in {"1", "true", "yes", "si", "y"}
 
     if _lock_is_stale(lock_path, lock_stale_hours):
         try:
@@ -347,6 +378,7 @@ def main() -> int:
                 reader_tarjetas,
                 f"TARJETAS[{base.name}]",
                 stable_seconds,
+                force_reprocess,
             )
             client_processed += p
             client_skipped += s
@@ -363,6 +395,7 @@ def main() -> int:
                 reader_compras,
                 f"COMPRAS[{base.name}]",
                 stable_seconds,
+                force_reprocess,
             )
             client_processed += p
             client_skipped += s
@@ -376,7 +409,7 @@ def main() -> int:
 
             client_result = "OK" if client_errors == 0 else "ERROR"
             client_lines = [
-                f"[{run_start}] INICIO | CLIENTE={base} | StableSec={stable_seconds}",
+                f"[{run_start}] INICIO | CLIENTE={base} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)}",
                 *client_events,
                 f"[{_now()}] RESULT={client_result} | Procesados={client_processed} | Saltados={client_skipped} | NoListos={client_not_ready} | Errores={client_errors}",
                 "",
@@ -399,7 +432,7 @@ def main() -> int:
         result = "OK" if total_errors == 0 else "ERROR"
         rutas_str = ";".join(str(p) for p in client_bases)
         log_lines = [
-            f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str} | StableSec={stable_seconds}",
+            f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)}",
             *global_events,
             f"[{run_end}] RESULT={result} | Procesados={total_processed} | Saltados={total_skipped} | NoListos={total_not_ready} | Errores={total_errors}",
             "",
