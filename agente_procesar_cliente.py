@@ -20,6 +20,7 @@ Reglas:
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import subprocess
 import sys
@@ -31,6 +32,8 @@ from typing import Iterable, List, Tuple
 SUPPORTED_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
 PROC_SUBDIR_NAME = "PROC_AGENTE_IA"
 RETENTION_DAYS = 7
+FILE_STABLE_SECONDS = 120
+LOCK_STALE_HOURS = 12
 
 
 def _now() -> str:
@@ -94,6 +97,52 @@ def _parse_client_paths() -> List[Path]:
     return unique_paths
 
 
+def _lock_is_stale(lock_path: Path, stale_hours: int) -> bool:
+    if not lock_path.exists():
+        return False
+    try:
+        age_seconds = dt.datetime.now().timestamp() - lock_path.stat().st_mtime
+        return age_seconds > (stale_hours * 60 * 60)
+    except Exception:
+        return False
+
+
+def _try_acquire_lock(lock_path: Path) -> bool:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as f:
+        payload = {
+            "pid": os.getpid(),
+            "timestamp": _now(),
+            "host": os.getenv("COMPUTERNAME", ""),
+        }
+        f.write(json.dumps(payload, ensure_ascii=True))
+    return True
+
+
+def _release_lock(lock_path: Path) -> None:
+    try:
+        if lock_path.exists():
+            lock_path.unlink()
+    except Exception:
+        # No corta el proceso por un fallo al liberar lock.
+        pass
+
+
+def _is_file_stable(src_file: Path, stable_seconds: int) -> bool:
+    try:
+        stat = src_file.stat()
+    except Exception:
+        return False
+    if stat.st_size <= 0:
+        return False
+    age_seconds = dt.datetime.now().timestamp() - stat.st_mtime
+    return age_seconds >= stable_seconds
+
+
 def _iter_root_files(folder: Path) -> List[Path]:
     if not folder.exists() or not folder.is_dir():
         return []
@@ -146,10 +195,16 @@ def _run_reader(reader_script: Path, src_file: Path, outdir: Path) -> Tuple[bool
     return ok, merged
 
 
-def _process_folder(folder: Path, reader_script: Path, label: str) -> Tuple[int, int, int, List[str]]:
+def _process_folder(
+    folder: Path,
+    reader_script: Path,
+    label: str,
+    stable_seconds: int,
+) -> Tuple[int, int, int, int, List[str]]:
     processed = 0
     skipped = 0
     errors = 0
+    not_ready = 0
     events: List[str] = []
     proc_dir = folder / PROC_SUBDIR_NAME
     proc_dir.mkdir(parents=True, exist_ok=True)
@@ -168,6 +223,12 @@ def _process_folder(folder: Path, reader_script: Path, label: str) -> Tuple[int,
             skipped += 1
             print(f"[{_now()}] {label}: SKIP {src_file.name} (ya existe {log_path.name})")
             events.append(f"[{_now()}] {label}|SKIP|{src_file.name}|YaProcesadoLog={log_path.name}")
+            continue
+
+        if not _is_file_stable(src_file, stable_seconds):
+            not_ready += 1
+            print(f"[{_now()}] {label}: SKIP {src_file.name} (archivo reciente/en subida)")
+            events.append(f"[{_now()}] {label}|SKIP_NOT_READY|{src_file.name}|StableSec={stable_seconds}")
             continue
 
         print(f"[{_now()}] {label}: PROCESANDO {src_file.name}")
@@ -210,79 +271,111 @@ def _process_folder(folder: Path, reader_script: Path, label: str) -> Tuple[int,
             print(f"[{_now()}] {label}: ERROR {src_file.name} (ver {log_path.name})")
             events.append(f"[{_now()}] {label}|ERROR|{src_file.name}|Log={log_path.name}")
 
-    return processed, skipped, errors, events
+    return processed, skipped, errors, not_ready, events
 
 
 def main() -> int:
     project_dir = _runtime_base_dir()
     day_stamp = dt.datetime.now().strftime("%Y%m%d")
     agent_log_path = project_dir / "LOG" / f"agente_{day_stamp}.log"
+    lock_path = project_dir / "LOG" / "agente_procesar_cliente.lock"
     run_start = _now()
     _load_dotenv_file(project_dir / ".env")
+    stable_seconds = int(os.getenv("ARCHIVO_ESTABLE_SEGUNDOS", str(FILE_STABLE_SECONDS)) or FILE_STABLE_SECONDS)
+    lock_stale_hours = int(os.getenv("LOCK_STALE_HORAS", str(LOCK_STALE_HOURS)) or LOCK_STALE_HOURS)
 
-    client_bases = _parse_client_paths()
-    if not client_bases:
-        print("ERROR: falta variable de entorno RUTA_CLIENTE o RUTAS_CLIENTE.")
-        print(r"Definila en .env (RUTA_CLIENTE=... o RUTAS_CLIENTE=ruta1;ruta2) o en entorno de PowerShell.")
-        _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=Faltan rutas de cliente")
-        return 2
+    if _lock_is_stale(lock_path, lock_stale_hours):
+        try:
+            lock_path.unlink()
+            _append_text(agent_log_path, f"[{run_start}] WARN | Lock viejo eliminado: {lock_path}")
+        except Exception:
+            pass
 
-    reader_tarjetas = project_dir / "lector_liquidaciones_to_json_v1.py"
-    reader_compras = project_dir / "lector_facturas_to_json_v5.py"
+    if not _try_acquire_lock(lock_path):
+        print("INFO: ya hay una ejecucion en curso. Se cancela esta corrida.")
+        _append_text(agent_log_path, f"[{run_start}] RESULT=SKIP | Motivo=Lock activo {lock_path}")
+        return 0
 
-    if not reader_tarjetas.exists():
-        print(f"ERROR: no existe {reader_tarjetas}")
-        _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=No existe {reader_tarjetas}")
-        return 2
-    if not reader_compras.exists():
-        print(f"ERROR: no existe {reader_compras}")
-        _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=No existe {reader_compras}")
-        return 2
+    try:
+        client_bases = _parse_client_paths()
+        if not client_bases:
+            print("ERROR: falta variable de entorno RUTA_CLIENTE o RUTAS_CLIENTE.")
+            print(r"Definila en .env (RUTA_CLIENTE=... o RUTAS_CLIENTE=ruta1;ruta2) o en entorno de PowerShell.")
+            _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=Faltan rutas de cliente")
+            return 2
 
-    total_processed = 0
-    total_skipped = 0
-    total_errors = 0
+        reader_tarjetas = project_dir / "lector_liquidaciones_to_json_v1.py"
+        reader_compras = project_dir / "lector_facturas_to_json_v5.py"
 
-    run_events: List[str] = []
+        if not reader_tarjetas.exists():
+            print(f"ERROR: no existe {reader_tarjetas}")
+            _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=No existe {reader_tarjetas}")
+            return 2
+        if not reader_compras.exists():
+            print(f"ERROR: no existe {reader_compras}")
+            _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=No existe {reader_compras}")
+            return 2
 
-    for base in client_bases:
-        tarjetas_dir = base / "TARJETAS"
-        compras_dir = base / "COMPRAS"
+        total_processed = 0
+        total_skipped = 0
+        total_errors = 0
+        total_not_ready = 0
 
-        print(f"\n[{_now()}] CLIENTE: {base}")
-        run_events.append(f"[{_now()}] CLIENTE|INICIO|Base={base}")
+        run_events: List[str] = []
 
-        p, s, e, ev = _process_folder(tarjetas_dir, reader_tarjetas, f"TARJETAS[{base.name}]")
-        total_processed += p
-        total_skipped += s
-        total_errors += e
-        run_events.extend(ev)
+        for base in client_bases:
+            tarjetas_dir = base / "TARJETAS"
+            compras_dir = base / "COMPRAS"
 
-        p, s, e, ev = _process_folder(compras_dir, reader_compras, f"COMPRAS[{base.name}]")
-        total_processed += p
-        total_skipped += s
-        total_errors += e
-        run_events.extend(ev)
+            print(f"\n[{_now()}] CLIENTE: {base}")
+            run_events.append(f"[{_now()}] CLIENTE|INICIO|Base={base}")
 
-    print("\n=== RESUMEN ===")
-    print("RUTAS_CLIENTE:")
-    for base in client_bases:
-        print(f"- {base}")
-    print(f"Procesados: {total_processed}")
-    print(f"Saltados (.log existente): {total_skipped}")
-    print(f"Errores: {total_errors}")
+            p, s, e, nr, ev = _process_folder(
+                tarjetas_dir,
+                reader_tarjetas,
+                f"TARJETAS[{base.name}]",
+                stable_seconds,
+            )
+            total_processed += p
+            total_skipped += s
+            total_errors += e
+            total_not_ready += nr
+            run_events.extend(ev)
 
-    run_end = _now()
-    result = "OK" if total_errors == 0 else "ERROR"
-    rutas_str = ";".join(str(p) for p in client_bases)
-    log_lines = [
-        f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str}",
-        *run_events,
-        f"[{run_end}] RESULT={result} | Procesados={total_processed} | Saltados={total_skipped} | Errores={total_errors}",
-        "",
-    ]
-    _append_text(agent_log_path, "\n".join(log_lines))
-    return 0
+            p, s, e, nr, ev = _process_folder(
+                compras_dir,
+                reader_compras,
+                f"COMPRAS[{base.name}]",
+                stable_seconds,
+            )
+            total_processed += p
+            total_skipped += s
+            total_errors += e
+            total_not_ready += nr
+            run_events.extend(ev)
+
+        print("\n=== RESUMEN ===")
+        print("RUTAS_CLIENTE:")
+        for base in client_bases:
+            print(f"- {base}")
+        print(f"Procesados: {total_processed}")
+        print(f"Saltados (.log existente): {total_skipped}")
+        print(f"Saltados (archivo en subida/reciente): {total_not_ready}")
+        print(f"Errores: {total_errors}")
+
+        run_end = _now()
+        result = "OK" if total_errors == 0 else "ERROR"
+        rutas_str = ";".join(str(p) for p in client_bases)
+        log_lines = [
+            f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str} | StableSec={stable_seconds}",
+            *run_events,
+            f"[{run_end}] RESULT={result} | Procesados={total_processed} | Saltados={total_skipped} | NoListos={total_not_ready} | Errores={total_errors}",
+            "",
+        ]
+        _append_text(agent_log_path, "\n".join(log_lines))
+        return 0
+    finally:
+        _release_lock(lock_path)
 
 
 if __name__ == "__main__":
