@@ -36,9 +36,23 @@ def _now() -> str:
     return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _runtime_base_dir() -> Path:
+    # En PyInstaller --onefile, __file__ puede vivir en carpeta temporal.
+    # Para logs/config conviene la carpeta del ejecutable real.
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
 def _write_log(log_path: Path, lines: Iterable[str]) -> None:
     text = "\n".join(lines).rstrip() + "\n"
     log_path.write_text(text, encoding="utf-8", errors="replace")
+
+
+def _append_text(log_path: Path, text: str) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8", errors="replace") as f:
+        f.write(text.rstrip() + "\n")
 
 
 def _load_dotenv_file(dotenv_path: Path) -> None:
@@ -108,24 +122,28 @@ def _run_reader(reader_script: Path, src_file: Path, outdir: Path) -> Tuple[bool
     return ok, merged
 
 
-def _process_folder(folder: Path, reader_script: Path, label: str) -> Tuple[int, int, int]:
+def _process_folder(folder: Path, reader_script: Path, label: str) -> Tuple[int, int, int, List[str]]:
     processed = 0
     skipped = 0
     errors = 0
+    events: List[str] = []
     proc_dir = folder / PROC_SUBDIR_NAME
     proc_dir.mkdir(parents=True, exist_ok=True)
     deleted = _cleanup_old_files(proc_dir, RETENTION_DAYS)
 
     files = _iter_root_files(folder)
     print(f"[{_now()}] {label}: encontrados {len(files)} archivos en {folder}")
+    events.append(f"[{_now()}] {label}|INFO|Encontrados={len(files)}|Folder={folder}")
     if deleted:
         print(f"[{_now()}] {label}: limpieza en {proc_dir.name}, eliminados {deleted} archivos (> {RETENTION_DAYS} dias)")
+        events.append(f"[{_now()}] {label}|INFO|Limpieza={deleted}|Folder={proc_dir}")
 
     for src_file in files:
         log_path = proc_dir / f"{src_file.name}.log"
         if log_path.exists():
             skipped += 1
             print(f"[{_now()}] {label}: SKIP {src_file.name} (ya existe {log_path.name})")
+            events.append(f"[{_now()}] {label}|SKIP|{src_file.name}|YaProcesadoLog={log_path.name}")
             continue
 
         print(f"[{_now()}] {label}: PROCESANDO {src_file.name}")
@@ -148,6 +166,7 @@ def _process_folder(folder: Path, reader_script: Path, label: str) -> Tuple[int,
                 ],
             )
             print(f"[{_now()}] {label}: OK {src_file.name}")
+            events.append(f"[{_now()}] {label}|OK|{src_file.name}")
         else:
             errors += 1
             _write_log(
@@ -165,18 +184,23 @@ def _process_folder(folder: Path, reader_script: Path, label: str) -> Tuple[int,
                 ],
             )
             print(f"[{_now()}] {label}: ERROR {src_file.name} (ver {log_path.name})")
+            events.append(f"[{_now()}] {label}|ERROR|{src_file.name}|Log={log_path.name}")
 
-    return processed, skipped, errors
+    return processed, skipped, errors, events
 
 
 def main() -> int:
-    project_dir = Path(__file__).resolve().parent
+    project_dir = _runtime_base_dir()
+    day_stamp = dt.datetime.now().strftime("%Y%m%d")
+    agent_log_path = project_dir / "LOG" / f"agente_{day_stamp}.log"
+    run_start = _now()
     _load_dotenv_file(project_dir / ".env")
 
     ruta_cliente = os.getenv("RUTA_CLIENTE", "").strip()
     if not ruta_cliente:
         print("ERROR: falta variable de entorno RUTA_CLIENTE.")
         print(r"Definila en .env (RUTA_CLIENTE=...) o en entorno de PowerShell.")
+        _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=Falta RUTA_CLIENTE")
         return 2
 
     base = Path(ruta_cliente)
@@ -188,30 +212,46 @@ def main() -> int:
 
     if not reader_tarjetas.exists():
         print(f"ERROR: no existe {reader_tarjetas}")
+        _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=No existe {reader_tarjetas}")
         return 2
     if not reader_compras.exists():
         print(f"ERROR: no existe {reader_compras}")
+        _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=No existe {reader_compras}")
         return 2
 
     total_processed = 0
     total_skipped = 0
     total_errors = 0
 
-    p, s, e = _process_folder(tarjetas_dir, reader_tarjetas, "TARJETAS")
-    total_processed += p
-    total_skipped += s
-    total_errors += e
+    run_events: List[str] = []
 
-    p, s, e = _process_folder(compras_dir, reader_compras, "COMPRAS")
+    p, s, e, ev = _process_folder(tarjetas_dir, reader_tarjetas, "TARJETAS")
     total_processed += p
     total_skipped += s
     total_errors += e
+    run_events.extend(ev)
+
+    p, s, e, ev = _process_folder(compras_dir, reader_compras, "COMPRAS")
+    total_processed += p
+    total_skipped += s
+    total_errors += e
+    run_events.extend(ev)
 
     print("\n=== RESUMEN ===")
     print(f"RUTA_CLIENTE: {base}")
     print(f"Procesados: {total_processed}")
     print(f"Saltados (.log existente): {total_skipped}")
     print(f"Errores: {total_errors}")
+
+    run_end = _now()
+    result = "OK" if total_errors == 0 else "ERROR"
+    log_lines = [
+        f"[{run_start}] INICIO | RUTA_CLIENTE={base}",
+        *run_events,
+        f"[{run_end}] RESULT={result} | Procesados={total_processed} | Saltados={total_skipped} | Errores={total_errors}",
+        "",
+    ]
+    _append_text(agent_log_path, "\n".join(log_lines))
     return 0
 
 
