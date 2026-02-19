@@ -1012,7 +1012,7 @@ def main() -> None:
                 try:
                     data = extract_first_json(out_text)
                 except Exception as e:
-                    raw_path = Path(outdir) / f"{safe_basename(args.files[0])}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_raw.txt"
+                    raw_path = Path(outdir) / f"{Path(args.files[0]).stem}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_raw.txt"
                     raw_path.write_text(out_text, encoding="utf-8", errors="replace")
                     raise SystemExit(f"ERROR: No se pudo parsear JSON. Se guardo la respuesta cruda en: {raw_path}") from e
 
@@ -1068,7 +1068,8 @@ def main() -> None:
                         log("Fallback OK: se usa resultado del modelo alternativo.")
 
             status("Guardando JSON...")
-            base = safe_basename(args.files[0])
+            # Mantener exactamente el nombre original (solo cambia extension a .json)
+            base = Path(args.files[0]).stem
             out_path = Path(outdir) / f"{base}.json"
             out_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
