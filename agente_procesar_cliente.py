@@ -3,10 +3,11 @@
 Agente de automatizacion para procesar tarjetas y compras por cliente.
 
 Reglas:
-- Lee RUTA_CLIENTE desde variable de entorno.
+- Lee RUTA_CLIENTE o RUTAS_CLIENTE desde variables de entorno.
 - Procesa solo archivos en carpeta raiz de:
   - <RUTA_CLIENTE>/TARJETAS
   - <RUTA_CLIENTE>/COMPRAS
+- Para multiples clientes: RUTAS_CLIENTE con rutas separadas por ';'.
 - Ejecuta en secuencia:
   - lector_liquidaciones_to_json_v1.py para TARJETAS
   - lector_facturas_to_json_v5.py para COMPRAS
@@ -68,6 +69,29 @@ def _load_dotenv_file(dotenv_path: Path) -> None:
         value = value.strip().strip('"').strip("'")
         if key and os.getenv(key) is None:
             os.environ[key] = value
+
+
+def _parse_client_paths() -> List[Path]:
+    rutas_cliente = os.getenv("RUTAS_CLIENTE", "").strip()
+    ruta_cliente = os.getenv("RUTA_CLIENTE", "").strip()
+
+    raw_paths: List[str] = []
+    if rutas_cliente:
+        raw_paths.extend(part.strip() for part in rutas_cliente.split(";") if part.strip())
+    if ruta_cliente:
+        raw_paths.append(ruta_cliente)
+
+    unique_paths: List[Path] = []
+    seen: set[str] = set()
+    for raw in raw_paths:
+        norm = str(Path(raw).resolve())
+        key = norm.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_paths.append(Path(raw))
+
+    return unique_paths
 
 
 def _iter_root_files(folder: Path) -> List[Path]:
@@ -196,16 +220,12 @@ def main() -> int:
     run_start = _now()
     _load_dotenv_file(project_dir / ".env")
 
-    ruta_cliente = os.getenv("RUTA_CLIENTE", "").strip()
-    if not ruta_cliente:
-        print("ERROR: falta variable de entorno RUTA_CLIENTE.")
-        print(r"Definila en .env (RUTA_CLIENTE=...) o en entorno de PowerShell.")
-        _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=Falta RUTA_CLIENTE")
+    client_bases = _parse_client_paths()
+    if not client_bases:
+        print("ERROR: falta variable de entorno RUTA_CLIENTE o RUTAS_CLIENTE.")
+        print(r"Definila en .env (RUTA_CLIENTE=... o RUTAS_CLIENTE=ruta1;ruta2) o en entorno de PowerShell.")
+        _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=Faltan rutas de cliente")
         return 2
-
-    base = Path(ruta_cliente)
-    tarjetas_dir = base / "TARJETAS"
-    compras_dir = base / "COMPRAS"
 
     reader_tarjetas = project_dir / "lector_liquidaciones_to_json_v1.py"
     reader_compras = project_dir / "lector_facturas_to_json_v5.py"
@@ -225,28 +245,38 @@ def main() -> int:
 
     run_events: List[str] = []
 
-    p, s, e, ev = _process_folder(tarjetas_dir, reader_tarjetas, "TARJETAS")
-    total_processed += p
-    total_skipped += s
-    total_errors += e
-    run_events.extend(ev)
+    for base in client_bases:
+        tarjetas_dir = base / "TARJETAS"
+        compras_dir = base / "COMPRAS"
 
-    p, s, e, ev = _process_folder(compras_dir, reader_compras, "COMPRAS")
-    total_processed += p
-    total_skipped += s
-    total_errors += e
-    run_events.extend(ev)
+        print(f"\n[{_now()}] CLIENTE: {base}")
+        run_events.append(f"[{_now()}] CLIENTE|INICIO|Base={base}")
+
+        p, s, e, ev = _process_folder(tarjetas_dir, reader_tarjetas, f"TARJETAS[{base.name}]")
+        total_processed += p
+        total_skipped += s
+        total_errors += e
+        run_events.extend(ev)
+
+        p, s, e, ev = _process_folder(compras_dir, reader_compras, f"COMPRAS[{base.name}]")
+        total_processed += p
+        total_skipped += s
+        total_errors += e
+        run_events.extend(ev)
 
     print("\n=== RESUMEN ===")
-    print(f"RUTA_CLIENTE: {base}")
+    print("RUTAS_CLIENTE:")
+    for base in client_bases:
+        print(f"- {base}")
     print(f"Procesados: {total_processed}")
     print(f"Saltados (.log existente): {total_skipped}")
     print(f"Errores: {total_errors}")
 
     run_end = _now()
     result = "OK" if total_errors == 0 else "ERROR"
+    rutas_str = ";".join(str(p) for p in client_bases)
     log_lines = [
-        f"[{run_start}] INICIO | RUTA_CLIENTE={base}",
+        f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str}",
         *run_events,
         f"[{run_end}] RESULT={result} | Procesados={total_processed} | Saltados={total_skipped} | Errores={total_errors}",
         "",
