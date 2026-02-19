@@ -97,6 +97,12 @@ def _parse_client_paths() -> List[Path]:
     return unique_paths
 
 
+def _safe_log_dir_name(base: Path) -> str:
+    name = (base.name or str(base)).strip()
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in name)
+    return safe or "cliente"
+
+
 def _lock_is_stale(lock_path: Path, stale_hours: int) -> bool:
     if not lock_path.exists():
         return False
@@ -277,8 +283,9 @@ def _process_folder(
 def main() -> int:
     project_dir = _runtime_base_dir()
     day_stamp = dt.datetime.now().strftime("%Y%m%d")
-    agent_log_path = project_dir / "LOG" / f"agente_{day_stamp}.log"
-    lock_path = project_dir / "LOG" / "agente_procesar_cliente.lock"
+    log_root = project_dir / "LOG"
+    agent_log_path = log_root / f"agente_{day_stamp}.log"
+    lock_path = log_root / "agente_procesar_cliente.lock"
     run_start = _now()
     _load_dotenv_file(project_dir / ".env")
     stable_seconds = int(os.getenv("ARCHIVO_ESTABLE_SEGUNDOS", str(FILE_STABLE_SECONDS)) or FILE_STABLE_SECONDS)
@@ -321,14 +328,19 @@ def main() -> int:
         total_errors = 0
         total_not_ready = 0
 
-        run_events: List[str] = []
+        global_events: List[str] = []
 
         for base in client_bases:
             tarjetas_dir = base / "TARJETAS"
             compras_dir = base / "COMPRAS"
+            client_log_path = log_root / _safe_log_dir_name(base) / f"agente_{day_stamp}.log"
+            client_events: List[str] = [f"[{_now()}] CLIENTE|INICIO|Base={base}"]
+            client_processed = 0
+            client_skipped = 0
+            client_errors = 0
+            client_not_ready = 0
 
             print(f"\n[{_now()}] CLIENTE: {base}")
-            run_events.append(f"[{_now()}] CLIENTE|INICIO|Base={base}")
 
             p, s, e, nr, ev = _process_folder(
                 tarjetas_dir,
@@ -336,11 +348,15 @@ def main() -> int:
                 f"TARJETAS[{base.name}]",
                 stable_seconds,
             )
+            client_processed += p
+            client_skipped += s
+            client_errors += e
+            client_not_ready += nr
             total_processed += p
             total_skipped += s
             total_errors += e
             total_not_ready += nr
-            run_events.extend(ev)
+            client_events.extend(ev)
 
             p, s, e, nr, ev = _process_folder(
                 compras_dir,
@@ -348,11 +364,27 @@ def main() -> int:
                 f"COMPRAS[{base.name}]",
                 stable_seconds,
             )
+            client_processed += p
+            client_skipped += s
+            client_errors += e
+            client_not_ready += nr
             total_processed += p
             total_skipped += s
             total_errors += e
             total_not_ready += nr
-            run_events.extend(ev)
+            client_events.extend(ev)
+
+            client_result = "OK" if client_errors == 0 else "ERROR"
+            client_lines = [
+                f"[{run_start}] INICIO | CLIENTE={base} | StableSec={stable_seconds}",
+                *client_events,
+                f"[{_now()}] RESULT={client_result} | Procesados={client_processed} | Saltados={client_skipped} | NoListos={client_not_ready} | Errores={client_errors}",
+                "",
+            ]
+            _append_text(client_log_path, "\n".join(client_lines))
+            global_events.append(
+                f"[{_now()}] CLIENTE|RESULT|Base={base}|Procesados={client_processed}|Saltados={client_skipped}|NoListos={client_not_ready}|Errores={client_errors}"
+            )
 
         print("\n=== RESUMEN ===")
         print("RUTAS_CLIENTE:")
@@ -368,7 +400,7 @@ def main() -> int:
         rutas_str = ";".join(str(p) for p in client_bases)
         log_lines = [
             f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str} | StableSec={stable_seconds}",
-            *run_events,
+            *global_events,
             f"[{run_end}] RESULT={result} | Procesados={total_processed} | Saltados={total_skipped} | NoListos={total_not_ready} | Errores={total_errors}",
             "",
         ]
