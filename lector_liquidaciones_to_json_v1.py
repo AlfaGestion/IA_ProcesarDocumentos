@@ -40,6 +40,7 @@ import calendar
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from ia_backend_transport import backend_enabled, call_backend
 
 
 # ----------------------------
@@ -1669,11 +1670,12 @@ def main() -> None:
             status("Cargando .env / variables...")
             load_env_near_app()
 
+            use_backend = backend_enabled()
             api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-            if not api_key:
+            if not use_backend and not api_key:
                 raise SystemExit(
-                    "ERROR: No está configurada OPENAI_API_KEY. "
-                    "Creá un .env junto al exe/script con OPENAI_API_KEY=... o definila como variable de entorno."
+                    "ERROR: No está configurada OPENAI_API_KEY ni IA_BACKEND_URL. "
+                    "Definí OPENAI_API_KEY (modo local) o IA_BACKEND_URL + IA_CLIENT_ID + IA_CLIENT_SECRET (modo backend)."
                 )
 
             if not args.files:
@@ -1758,26 +1760,34 @@ def main() -> None:
 
             status("Analizando con Inteligencia Artificial...")
             log("Motor IA: Activo")
-            client = OpenAI(api_key=api_key)
+            client = None if use_backend else OpenAI(api_key=api_key)
 
             def call_model(content_blocks: List[Dict[str, Any]]) -> str:
-                resp = client.responses.create(
-                    model=args.model,
-                    max_output_tokens=4000,
-                    input=[{"role": "user", "content": content_blocks}],
-                )
+                if use_backend:
+                    out_text = call_backend(
+                        content_blocks=content_blocks,
+                        model=args.model,
+                        max_output_tokens=4000,
+                    )
+                else:
+                    resp = client.responses.create(
+                        model=args.model,
+                        max_output_tokens=4000,
+                        input=[{"role": "user", "content": content_blocks}],
+                    )
 
-                out_text = ""
-                try:
-                    out_text = resp.output[0].content[0].text
-                except Exception:
-                    parts = []
-                    for item in getattr(resp, "output", []) or []:
-                        for c in getattr(item, "content", []) or []:
-                            t = getattr(c, "text", None)
-                            if t:
-                                parts.append(t)
-                    out_text = "\n".join(parts)
+                    out_text = (getattr(resp, "output_text", None) or "").strip()
+                    if not out_text:
+                        try:
+                            out_text = resp.output[0].content[0].text
+                        except Exception:
+                            parts = []
+                            for item in getattr(resp, "output", []) or []:
+                                for c in getattr(item, "content", []) or []:
+                                    t = getattr(c, "text", None)
+                                    if t:
+                                        parts.append(t)
+                            out_text = "\n".join(parts)
 
                 if not out_text.strip():
                     raise SystemExit("ERROR: Respuesta vacía del modelo.")
