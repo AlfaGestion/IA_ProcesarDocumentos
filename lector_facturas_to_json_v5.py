@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from ia_backend_transport import backend_enabled, call_backend
 
 
 # ----------------------------
@@ -1023,11 +1024,12 @@ def main() -> None:
             status("Cargando .env / variables...")
             load_env_near_app()
 
+            use_backend = backend_enabled()
             api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-            if not api_key:
+            if not use_backend and not api_key:
                 raise SystemExit(
-                    "ERROR: No está configurada OPENAI_API_KEY. "
-                    "Creá un .env junto al exe/script con OPENAI_API_KEY=... o definila como variable de entorno."
+                    "ERROR: No está configurada OPENAI_API_KEY ni IA_BACKEND_URL. "
+                    "Definí OPENAI_API_KEY (modo local) o IA_BACKEND_URL + IA_CLIENT_ID + IA_CLIENT_SECRET (modo backend)."
                 )
 
             if not args.files:
@@ -1077,38 +1079,46 @@ def main() -> None:
 
             status("Analizando con Inteligencia Artificial...")
             log("Motor IA: Activo")
-            client = OpenAI(api_key=api_key)
+            client = None if use_backend else OpenAI(api_key=api_key)
 
             def call_model(content_blocks: List[Dict[str, Any]], model_name: str) -> dict:
-                resp = client.responses.create(
-                    model=model_name,
-                    max_output_tokens=16000,  # tablas largas
-                    input=[{"role": "user", "content": content_blocks}],
-                    text={"format": {"type": "json_object"}},
-                )
+                if use_backend:
+                    out_text = call_backend(
+                        content_blocks=content_blocks,
+                        model=model_name,
+                        max_output_tokens=16000,
+                        text={"format": {"type": "json_object"}},
+                    )
+                else:
+                    resp = client.responses.create(
+                        model=model_name,
+                        max_output_tokens=16000,  # tablas largas
+                        input=[{"role": "user", "content": content_blocks}],
+                        text={"format": {"type": "json_object"}},
+                    )
 
-                out_text = (getattr(resp, "output_text", None) or "").strip()
-                if not out_text:
-                    try:
-                        out_text = resp.output[0].content[0].text
-                    except Exception:
-                        # fallback: juntar textos si vinieron en partes
-                        parts = []
-                        for item in getattr(resp, "output", []) or []:
-                            for c in getattr(item, "content", []) or []:
-                                t = getattr(c, "text", None)
-                                if t:
-                                    parts.append(t)
-                        out_text = "\n".join(parts).strip()
+                    out_text = (getattr(resp, "output_text", None) or "").strip()
+                    if not out_text:
+                        try:
+                            out_text = resp.output[0].content[0].text
+                        except Exception:
+                            # fallback: juntar textos si vinieron en partes
+                            parts = []
+                            for item in getattr(resp, "output", []) or []:
+                                for c in getattr(item, "content", []) or []:
+                                    t = getattr(c, "text", None)
+                                    if t:
+                                        parts.append(t)
+                            out_text = "\n".join(parts).strip()
 
-                if not out_text:
-                    raw_path = Path(outdir) / f"{Path(args.files[0]).stem}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_raw.txt"
-                    try:
-                        debug_payload = resp.model_dump_json(indent=2)
-                    except Exception:
-                        debug_payload = repr(resp)
-                    raw_path.write_text(debug_payload, encoding="utf-8", errors="replace")
-                    raise SystemExit(f"ERROR: Respuesta vacia del modelo. Se guardo diagnostico en: {raw_path}")
+                    if not out_text:
+                        raw_path = Path(outdir) / f"{Path(args.files[0]).stem}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_raw.txt"
+                        try:
+                            debug_payload = resp.model_dump_json(indent=2)
+                        except Exception:
+                            debug_payload = repr(resp)
+                        raw_path.write_text(debug_payload, encoding="utf-8", errors="replace")
+                        raise SystemExit(f"ERROR: Respuesta vacia del modelo. Se guardo diagnostico en: {raw_path}")
 
                 try:
                     data = extract_first_json(out_text)
