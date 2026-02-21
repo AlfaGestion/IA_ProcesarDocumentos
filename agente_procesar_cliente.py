@@ -22,10 +22,12 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 
 # Extensiones soportadas actualmente por ambos scripts lectores.
@@ -211,6 +213,73 @@ def _run_reader(reader_script: Path, src_file: Path, outdir: Path) -> Tuple[bool
     return ok, merged
 
 
+def _run_reader_many(reader_script: Path, src_files: List[Path], outdir: Path) -> Tuple[bool, str]:
+    cmd = [sys.executable, str(reader_script), *[str(p) for p in src_files], "--outdir", str(outdir)]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(reader_script.parent),
+    )
+    merged = (proc.stdout or "").strip()
+    if proc.stderr:
+        merged = (merged + "\n" + proc.stderr.strip()).strip()
+    ok = proc.returncode == 0
+    return ok, merged
+
+
+def _looks_like_date_token(s: str) -> Optional[str]:
+    m = re.search(r"\b(\d{1,2}[-_/]\d{1,2}(?:[-_/]\d{2,4})?)\b", s)
+    return m.group(1).replace("_", "-").replace("/", "-") if m else None
+
+
+def _looks_like_comprobante_token(s: str) -> Optional[str]:
+    m = re.search(r"\b(\d{1,4}\s*[-_/]\s*\d{4,8})\b", s)
+    if m:
+        return re.sub(r"\s+", "", m.group(1)).replace("_", "-").replace("/", "-")
+    m = re.search(r"\b(\d{8,14})\b", s)
+    return m.group(1) if m else None
+
+
+def _extract_provider_date_comprobante(stem: str) -> Optional[Tuple[str, str, str]]:
+    s = re.sub(r"\s+", " ", stem).strip()
+    date_tok = _looks_like_date_token(s)
+    comp_tok = _looks_like_comprobante_token(s)
+    if not date_tok or not comp_tok:
+        return None
+
+    provider = s.upper()
+    provider = re.sub(r"\b(FAC|FACT|FACTURA|NC|NOTA|CREDITO|COMPROBANTE|OK)\b", " ", provider, flags=re.IGNORECASE)
+    provider = provider.replace(date_tok.upper(), " ").replace(comp_tok.upper(), " ")
+    provider = re.sub(r"[\W_]+", " ", provider, flags=re.UNICODE)
+    provider = re.sub(r"\s+", " ", provider).strip()
+    if len(provider) < 3:
+        return None
+    return provider, date_tok, comp_tok
+
+
+def _group_compras_candidates(files: List[Path]) -> List[List[Path]]:
+    grouped: Dict[Tuple[str, str, str], List[Path]] = defaultdict(list)
+    singles: List[Path] = []
+    for f in files:
+        key = _extract_provider_date_comprobante(f.stem)
+        if key is None:
+            singles.append(f)
+            continue
+        grouped[key].append(f)
+
+    out: List[List[Path]] = []
+    for _, group in grouped.items():
+        group.sort(key=lambda p: (p.stat().st_mtime, p.name.lower()))
+        out.append(group)
+    for f in singles:
+        out.append([f])
+    out.sort(key=lambda g: g[0].name.lower())
+    return out
+
+
 def _read_status_from_log(log_path: Path) -> Optional[str]:
     try:
         for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -227,6 +296,7 @@ def _process_folder(
     label: str,
     stable_seconds: int,
     force_reprocess: bool,
+    pregroup_compras: bool,
 ) -> Tuple[int, int, int, int, List[str]]:
     processed = 0
     skipped = 0
@@ -244,6 +314,7 @@ def _process_folder(
         print(f"[{_now()}] {label}: limpieza en {proc_dir.name}, eliminados {deleted} archivos (> {RETENTION_DAYS} dias)")
         events.append(f"[{_now()}] {label}|INFO|Limpieza={deleted}|Folder={proc_dir}")
 
+    pending_files: List[Path] = []
     for src_file in files:
         log_path = proc_dir / f"{src_file.name}.log"
         if log_path.exists():
@@ -267,45 +338,73 @@ def _process_folder(
             events.append(f"[{_now()}] {label}|SKIP_NOT_READY|{src_file.name}|StableSec={stable_seconds}")
             continue
 
-        print(f"[{_now()}] {label}: PROCESANDO {src_file.name}")
-        ok, output = _run_reader(reader_script, src_file, proc_dir)
-        processed += 1
+        pending_files.append(src_file)
+
+    use_grouping = pregroup_compras and label.startswith("COMPRAS[")
+    groups: List[List[Path]] = [[p] for p in pending_files]
+    if use_grouping and pending_files:
+        groups = _group_compras_candidates(pending_files)
+        multi = sum(1 for g in groups if len(g) > 1)
+        events.append(f"[{_now()}] {label}|INFO|PreAgrupado={len(groups)}|Multipagina={multi}")
+        if multi:
+            print(f"[{_now()}] {label}: pre-agrupado activo, grupos={len(groups)}, multipagina={multi}")
+
+    for group in groups:
+        if len(group) == 1:
+            src_file = group[0]
+            log_path = proc_dir / f"{src_file.name}.log"
+            print(f"[{_now()}] {label}: PROCESANDO {src_file.name}")
+            ok, output = _run_reader(reader_script, src_file, proc_dir)
+            processed += 1
+            group_desc = src_file.name
+        else:
+            names = " | ".join(p.name for p in group)
+            print(f"[{_now()}] {label}: PROCESANDO GRUPO ({len(group)}): {names}")
+            ok, output = _run_reader_many(reader_script, group, proc_dir)
+            processed += len(group)
+            group_desc = names
 
         if ok:
-            _write_log(
-                log_path,
-                [
-                    f"STATUS=OK",
-                    f"TIMESTAMP={_now()}",
-                    f"READER={reader_script.name}",
-                    f"FILE={src_file}",
-                    f"OUTPUT_DIR={proc_dir}",
-                    f"MESSAGE=Procesado correctamente",
-                    "OUTPUT_BEGIN",
-                    output if output else "(sin salida)",
-                    "OUTPUT_END",
-                ],
-            )
-            print(f"[{_now()}] {label}: OK {src_file.name}")
-            events.append(f"[{_now()}] {label}|OK|{src_file.name}")
+            for src_file in group:
+                log_path = proc_dir / f"{src_file.name}.log"
+                _write_log(
+                    log_path,
+                    [
+                        f"STATUS=OK",
+                        f"TIMESTAMP={_now()}",
+                        f"READER={reader_script.name}",
+                        f"FILE={src_file}",
+                        f"OUTPUT_DIR={proc_dir}",
+                        f"GROUP_SIZE={len(group)}",
+                        f"MESSAGE=Procesado correctamente",
+                        "OUTPUT_BEGIN",
+                        output if output else "(sin salida)",
+                        "OUTPUT_END",
+                    ],
+                )
+                events.append(f"[{_now()}] {label}|OK|{src_file.name}|GroupSize={len(group)}")
+            print(f"[{_now()}] {label}: OK {group_desc}")
         else:
-            errors += 1
-            _write_log(
-                log_path,
-                [
-                    f"STATUS=ERROR",
-                    f"TIMESTAMP={_now()}",
-                    f"READER={reader_script.name}",
-                    f"FILE={src_file}",
-                    f"OUTPUT_DIR={proc_dir}",
-                    f"MESSAGE=Error durante el procesamiento",
-                    "OUTPUT_BEGIN",
-                    output if output else "(sin detalle de error)",
-                    "OUTPUT_END",
-                ],
-            )
-            print(f"[{_now()}] {label}: ERROR {src_file.name} (ver {log_path.name})")
-            events.append(f"[{_now()}] {label}|ERROR|{src_file.name}|Log={log_path.name}")
+            errors += len(group)
+            for src_file in group:
+                log_path = proc_dir / f"{src_file.name}.log"
+                _write_log(
+                    log_path,
+                    [
+                        f"STATUS=ERROR",
+                        f"TIMESTAMP={_now()}",
+                        f"READER={reader_script.name}",
+                        f"FILE={src_file}",
+                        f"OUTPUT_DIR={proc_dir}",
+                        f"GROUP_SIZE={len(group)}",
+                        f"MESSAGE=Error durante el procesamiento",
+                        "OUTPUT_BEGIN",
+                        output if output else "(sin detalle de error)",
+                        "OUTPUT_END",
+                    ],
+                )
+                events.append(f"[{_now()}] {label}|ERROR|{src_file.name}|Log={log_path.name}|GroupSize={len(group)}")
+            print(f"[{_now()}] {label}: ERROR {group_desc}")
 
     return processed, skipped, errors, not_ready, events
 
@@ -321,6 +420,7 @@ def main() -> int:
     stable_seconds = int(os.getenv("ARCHIVO_ESTABLE_SEGUNDOS", str(FILE_STABLE_SECONDS)) or FILE_STABLE_SECONDS)
     lock_stale_hours = int(os.getenv("LOCK_STALE_HORAS", str(LOCK_STALE_HOURS)) or LOCK_STALE_HOURS)
     force_reprocess = os.getenv("REPROCESAR_TODO", "0").strip().lower() in {"1", "true", "yes", "si", "y"}
+    pregroup_compras = os.getenv("PREAGRUPAR_COMPRAS", "1").strip().lower() in {"1", "true", "yes", "si", "y"}
 
     if _lock_is_stale(lock_path, lock_stale_hours):
         try:
@@ -379,6 +479,7 @@ def main() -> int:
                 f"TARJETAS[{base.name}]",
                 stable_seconds,
                 force_reprocess,
+                False,
             )
             client_processed += p
             client_skipped += s
@@ -396,6 +497,7 @@ def main() -> int:
                 f"COMPRAS[{base.name}]",
                 stable_seconds,
                 force_reprocess,
+                pregroup_compras,
             )
             client_processed += p
             client_skipped += s
@@ -409,7 +511,7 @@ def main() -> int:
 
             client_result = "OK" if client_errors == 0 else "ERROR"
             client_lines = [
-                f"[{run_start}] INICIO | CLIENTE={base} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)}",
+                f"[{run_start}] INICIO | CLIENTE={base} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)} | PreAgruparCompras={int(pregroup_compras)}",
                 *client_events,
                 f"[{_now()}] RESULT={client_result} | Procesados={client_processed} | Saltados={client_skipped} | NoListos={client_not_ready} | Errores={client_errors}",
                 "",
@@ -432,7 +534,7 @@ def main() -> int:
         result = "OK" if total_errors == 0 else "ERROR"
         rutas_str = ";".join(str(p) for p in client_bases)
         log_lines = [
-            f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)}",
+            f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)} | PreAgruparCompras={int(pregroup_compras)}",
             *global_events,
             f"[{run_end}] RESULT={result} | Procesados={total_processed} | Saltados={total_skipped} | NoListos={total_not_ready} | Errores={total_errors}",
             "",
