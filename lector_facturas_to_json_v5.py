@@ -721,6 +721,7 @@ def dedupe_rows(rows: List[dict]) -> List[dict]:
 # Prompt
 # ----------------------------
 DEFAULT_PROMPT = r"""
+
 Vas a analizar 1 a 5 páginas de una factura / comprobante de compra.
 Respondé **SOLO** con JSON válido (sin texto adicional).
 
@@ -728,55 +729,68 @@ El JSON debe tener ESTE formato fijo (NO elimines claves):
 
 {
   "CAB": {
-    "Proveedor": "",
-    "CUIT": "",
-    "Domicilio": "",
-    "CondicionIVA": "",
-    "TipoComprobante": "",
-    "Letra": "",
-    "PuntoVenta": "",
-    "Numero": "",
+    "CUENTA": "",
+    "Nombre": "",
+    "DOMICILIO": "",
+    "LOCALIDAD": "",
+    "CODIGOPOSTAL": "",
+    "IDPROVINCIA": "",
+    "TELEFONO": "",
+    "DOCUMENTOTIPO": "",
+    "NUMERO_CUIT": "",
+    "CONDICIONIVA": "",
+    "SUCURSAL": "",
+    "NUMERO": "",
+    "LETRA": "",
+    "FechaSubdiario": "",
+    "CONCEPTO": "",
     "Fecha": "",
     "Vencimiento": "",
-    "Moneda": "",
-    "CAE": "",
-    "VtoCAE": "",
-    "Observaciones": ""
+    "Vigencia": "",
+    "FHVToCAI": "",
+    "NROCAI": ""
   },
   "ROWS": [
     {
-      "Cantidad": "",
       "Codigo_Articulo": "",
       "Descripcion": "",
       "UD": "",
       "Importe_Lista": "",
+      "Cantidad": "",
       "% Dto1": "",
       "% Dto2": "",
       "Importe_Neto": "",
+      "Total": "",
+      "AuxNroLote": "",
+      "AuxNroSerie": "",
       "IVA": "",
       "Impuestos internos": "",
       "Bl/Pq": "",
       "Moneda": "",
-      "Total": "",
-      "AuxNroLote": "",
-      "AuxNroSerie": ""
+      "Tot.Imp.Int": ""
     }
   ],
   "TOTALES": {
+    "Subtotal": "",
+    "Pesos brutos": "",
     "Neto gravado": "",
-    "Neto no gravado": "",
     "Exento": "",
-    "IVA 21%": "",
-    "IVA 10.5%": "",
-    "IVA 27%": "",
-    "Otros": [{"Etiqueta":"","Importe_Neto":""}],
+    "No gravado": "",
+    "Descuento general": "",
+    "IVA 21": "",
+    "IVA 10.5": "",
+    "IVA 27": "",
+    "Percepcion IVA": "",
     "Percepcion IIBB": "",
     "Percepcion Ganancias": "",
     "Impuestos internos": "",
     "Otros impuestos": "",
     "Total": "",
     "Total final": "",
-    "Moneda": ""
+    "Moneda": "",
+    "Otros": [
+      {"Etiqueta": "", "Importe_Neto": ""}
+    ]
   },
   "meta": {
     "comprobante_raw": "",
@@ -787,12 +801,89 @@ El JSON debe tener ESTE formato fijo (NO elimines claves):
   }
 }
 
-REGLAS IMPORTANTES:
-- NO inventes datos.
-- Si algo no se ve o no es seguro, dejalo "".
-- Respetá formato de números y fechas tal como aparece.
-- Si hay varias páginas, unificá en un solo JSON final.
-- Respondé SOLO JSON.
+REGLAS IMPORTANTES (para no confundir PROVEEDOR con CLIENTE):
+- En meta.orden_columnas devolvé una LISTA con el orden real de columnas del detalle (de izquierda a derecha) según la tabla/encabezados que veas.
+  * Usá los nombres EXACTOS de las claves de ROWS.
+  * Ej: ["Cantidad","Codigo_Articulo","Descripcion","Importe_Neto","Total"] o ["Codigo_Articulo","Descripcion","Cantidad","Importe_Neto","% Dto1","% Dto2","Total"]
+  * Si no se ven encabezados o no estás seguro, dejá [].
+1) "Nombre", "DOMICILIO", "LOCALIDAD", "CODIGOPOSTAL", "IDPROVINCIA", "TELEFONO" deben corresponder **AL PROVEEDOR/EMISOR**.
+   - NO uses los datos del destinatario/cliente ("Sres:", "Cliente:", etc.).
+
+2) "CUENTA": dejar vacío "" (o si no podés, poner el CUIT del proveedor). NO usar CUIT del cliente.
+
+3) DOCUMENTO del proveedor:
+   - "DOCUMENTOTIPO" = "CUIT" (o "DNI" si realmente es DNI).
+   - "NUMERO_CUIT" = CUIT del proveedor.
+
+4) COMPROBANTE:
+   - "SUCURSAL" = punto de venta (ej: "0011").
+   - "NUMERO" = número siguiente (ej: "00247502").
+   - "LETRA" = A/B/C si aparece.
+
+5) FECHAS:
+   - "Fecha" = fecha de emisión (dd/mm/yyyy).
+   - "FechaSubdiario" = igual a "Fecha" si no hay otra.
+   - "Vencimiento" = fecha de vto si aparece.
+
+6) CAE/CAI:
+   - "NROCAI" = CAE/CAI.
+   - "FHVToCAI" = Vto CAE/CAI.
+
+7) IMPORTES (ROWS y TOTALES):
+   - En ROWS, en cada item incluí solo las claves que tengan valor (no repitas campos vacíos).
+
+   - devuelve importes exactamente como se ven (raw), sin intentar normalizar
+
+8) TOTALES (pie de página):
+   - Buscá el sector donde diga: Subtotal / Neto / IVA / Percepciones / Total.
+   - Si no existe algún concepto, dejalo vacío "".
+   - Si hay conceptos extra (por ejemplo "Impuesto municipal", "Tasa", "Percep. varias"), cargalos en TOTALES.Otros[].
+   - En meta.totales_raw poné un resumen corto de texto que veas en el pie (para auditoría/debug), sin inventar.
+
+9) Si un dato no aparece o hay duda, dejalo vacío "". NO elimines claves.
+
+10) IGNORAR LA COLUMNA "Precio Sug" o "Precio Sugerido"
+
+META – ORDEN DE COLUMNAS (MUY IMPORTANTE):
+
+- meta.orden_columnas debe contener EXCLUSIVAMENTE nombres de claves definidas en ROWS.
+- NO usar los títulos reales de las columnas impresas en la factura.
+- El orden debe reflejar la disposición visual de izquierda a derecha del detalle,
+  pero expresado SIEMPRE con los nombres internos de ROWS.
+
+Ejemplo:
+Si la factura muestra:
+  "Cant | Cod | Artículo | Precio Unit | Importe"
+
+Y vos interpretás:
+  "Cant"           ? "Cantidad"
+  "Cod"            ? "Codigo_Articulo"
+  "Artículo"       ? "Descripcion"
+  "Precio Unit"    ? "Importe_Neto"
+  "Importe"        ? "Total"
+
+Entonces devolvé:
+  meta.orden_columnas = ["Cantidad","Codigo_Articulo","Descripcion","Importe_Neto","Total"]
+
+- Si no se ven encabezados claros o no podés inferir la equivalencia con certeza, devolvé [].
+
+REGLAS DE PRECIOS (ROWS) — preferencia cuando el comprobante lo permita:
+- "Importe_Lista": debe ser el precio unitario de lista / precio proveedor ANTES de descuentos (precio base).
+- "% Dto1" y "% Dto2": descuentos porcentuales si aparecen (en columna o embebidos en la descripción).
+- "Importe_Neto": debe ser el precio unitario NETO luego de aplicar descuentos sobre "Importe_Lista".
+  * Si hay dos descuentos, aplicalos en cascada (ej: lista=100, dto1=10% => 90; dto2=5% => 85.50).
+- "Total": debe ser "Importe_Neto" * "Cantidad" (si "Importe_Neto" es unitario neto).
+- Si el documento muestra que "Importe_Neto" ya es el total por renglón (no unitario), entonces:
+  * poné "Importe_Neto" como el valor que se vea (sin inventar) y calculá "Total" sólo si está explícito.
+- NO inventes importes: si no se puede determinar con certeza por lo que se ve en la tabla, dejá el campo en "".
+
+REGLA ANTI - CORTE:
+- El detalle puede ser MUY largo. NO cierres el detalle antes de terminar la página.
+- La línea '*** Transporte: ...' NO es fin de detalle. Es un ítem adicional y el detalle continúa debajo.
+- Si el encabezado de columnas se repite, seguí leyendo los renglones.
+- Si el PDF tiene varias páginas, continuá con TODAS las páginas antes de cerrar el JSON.
+
+Respondé SOLO JSON.
 """
 
 
@@ -996,18 +1087,28 @@ def main() -> None:
                     text={"format": {"type": "json_object"}},
                 )
 
-                out_text = ""
-                try:
-                    out_text = resp.output[0].content[0].text
-                except Exception:
-                    # fallback: juntar textos si vinieron en partes
-                    parts = []
-                    for item in getattr(resp, "output", []) or []:
-                        for c in getattr(item, "content", []) or []:
-                            t = getattr(c, "text", None)
-                            if t:
-                                parts.append(t)
-                    out_text = "\n".join(parts)
+                out_text = (getattr(resp, "output_text", None) or "").strip()
+                if not out_text:
+                    try:
+                        out_text = resp.output[0].content[0].text
+                    except Exception:
+                        # fallback: juntar textos si vinieron en partes
+                        parts = []
+                        for item in getattr(resp, "output", []) or []:
+                            for c in getattr(item, "content", []) or []:
+                                t = getattr(c, "text", None)
+                                if t:
+                                    parts.append(t)
+                        out_text = "\n".join(parts).strip()
+
+                if not out_text:
+                    raw_path = Path(outdir) / f"{Path(args.files[0]).stem}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_raw.txt"
+                    try:
+                        debug_payload = resp.model_dump_json(indent=2)
+                    except Exception:
+                        debug_payload = repr(resp)
+                    raw_path.write_text(debug_payload, encoding="utf-8", errors="replace")
+                    raise SystemExit(f"ERROR: Respuesta vacia del modelo. Se guardo diagnostico en: {raw_path}")
 
                 try:
                     data = extract_first_json(out_text)
@@ -1049,23 +1150,35 @@ def main() -> None:
                 validate_totals_integrity(data_model, tolerance=0.03)
                 return data_model
 
+            fallback_enabled = (not args.no_fallback) and bool(args.fallback_model) and args.fallback_model != args.model
             log(f"Intento 1 con modelo: {args.model}")
-            data = run_extraction(args.model)
-
-            fallback_enabled = (not args.no_fallback) and ("mini" in args.model.lower())
-            if fallback_enabled and args.fallback_model and args.fallback_model != args.model:
-                should_retry, reason = needs_model_fallback(data)
-                if should_retry:
-                    status("Reintentando con modelo alternativo...")
-                    log(f"Fallback activado: {reason}")
-                    log(f"Intento 2 con modelo: {args.fallback_model}")
-                    retry_data = run_extraction(args.fallback_model)
-                    retry_bad, _ = needs_model_fallback(retry_data)
-                    if retry_bad:
-                        log("Fallback ejecutado, pero se conserva resultado original por no mejorar calidad.")
-                    else:
-                        data = retry_data
-                        log("Fallback OK: se usa resultado del modelo alternativo.")
+            try:
+                data = run_extraction(args.model)
+            except SystemExit as first_err:
+                if not fallback_enabled:
+                    raise
+                status("Reintentando con modelo alternativo...")
+                log(f"Intento 1 fallido: {first_err}")
+                log(f"Intento 2 con modelo: {args.fallback_model}")
+                data = run_extraction(args.fallback_model)
+            else:
+                if fallback_enabled:
+                    should_retry, reason = needs_model_fallback(data)
+                    if should_retry:
+                        status("Reintentando con modelo alternativo...")
+                        log(f"Fallback activado: {reason}")
+                        log(f"Intento 2 con modelo: {args.fallback_model}")
+                        try:
+                            retry_data = run_extraction(args.fallback_model)
+                        except SystemExit as retry_err:
+                            log(f"Fallback fallo: {retry_err}. Se conserva resultado original.")
+                        else:
+                            retry_bad, _ = needs_model_fallback(retry_data)
+                            if retry_bad:
+                                log("Fallback ejecutado, pero se conserva resultado original por no mejorar calidad.")
+                            else:
+                                data = retry_data
+                                log("Fallback OK: se usa resultado del modelo alternativo.")
 
             status("Guardando JSON...")
             # Mantener exactamente el nombre original (solo cambia extension a .json)
