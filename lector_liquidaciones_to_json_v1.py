@@ -39,7 +39,6 @@ from typing import Any, Dict, List, Optional
 import calendar
 
 from dotenv import load_dotenv
-from openai import OpenAI
 from ia_backend_transport import backend_enabled, call_backend
 
 
@@ -1616,7 +1615,7 @@ def file_to_content_blocks(file_path: str, tiles: int = 1, pdf_chunk_pages: int 
 def main() -> None:
     parser = argparse.ArgumentParser(
         add_help=True,
-        description="Lector de liquidaciones -> TXT (multipágina). Usa OPENAI_API_KEY (env o .env junto al exe/script).",
+        description="Lector de liquidaciones -> TXT (multipágina). Usa backend remoto (IA_BACKEND_URL + credenciales).",
     )
     parser.add_argument("files", nargs="*", help="Archivos de entrada (imágenes/PDF) en orden de páginas")
     parser.add_argument("--outdir", default="", help="Carpeta de salida. Default: TEMP del sistema")
@@ -1670,12 +1669,10 @@ def main() -> None:
             status("Cargando .env / variables...")
             load_env_near_app()
 
-            use_backend = backend_enabled()
-            api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-            if not use_backend and not api_key:
+            if not backend_enabled():
                 raise SystemExit(
-                    "ERROR: No está configurada OPENAI_API_KEY ni IA_BACKEND_URL. "
-                    "Definí OPENAI_API_KEY (modo local) o IA_BACKEND_URL + IA_CLIENT_ID + IA_CLIENT_SECRET (modo backend)."
+                    "ERROR: No está configurado IA_BACKEND_URL. "
+                    "Definí IA_BACKEND_URL + IA_CLIENT_ID + IA_CLIENT_SECRET para usar backend remoto."
                 )
 
             if not args.files:
@@ -1760,34 +1757,12 @@ def main() -> None:
 
             status("Analizando con Inteligencia Artificial...")
             log("Motor IA: Activo")
-            client = None if use_backend else OpenAI(api_key=api_key)
-
             def call_model(content_blocks: List[Dict[str, Any]]) -> str:
-                if use_backend:
-                    out_text = call_backend(
-                        content_blocks=content_blocks,
-                        model=args.model,
-                        max_output_tokens=4000,
-                    )
-                else:
-                    resp = client.responses.create(
-                        model=args.model,
-                        max_output_tokens=4000,
-                        input=[{"role": "user", "content": content_blocks}],
-                    )
-
-                    out_text = (getattr(resp, "output_text", None) or "").strip()
-                    if not out_text:
-                        try:
-                            out_text = resp.output[0].content[0].text
-                        except Exception:
-                            parts = []
-                            for item in getattr(resp, "output", []) or []:
-                                for c in getattr(item, "content", []) or []:
-                                    t = getattr(c, "text", None)
-                                    if t:
-                                        parts.append(t)
-                            out_text = "\n".join(parts)
+                out_text = call_backend(
+                    content_blocks=content_blocks,
+                    model=args.model,
+                    max_output_tokens=4000,
+                )
 
                 if not out_text.strip():
                     raise SystemExit("ERROR: Respuesta vacía del modelo.")
