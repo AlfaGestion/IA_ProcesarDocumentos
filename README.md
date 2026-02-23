@@ -1,12 +1,12 @@
 # IA_ProcesarDocumentos
 
-Scripts para leer documentos (imágenes o PDF) y devolver JSON normalizado usando OpenAI.
+Scripts para leer documentos (imï¿½genes o PDF) y devolver JSON normalizado usando OpenAI.
 
 ## Requisitos
 - Python 3.10+ (recomendado 3.11)
 - Credenciales de backend remoto (`IA_BACKEND_URL`, `IA_CLIENT_ID`, `IA_CLIENT_SECRET`)
 
-## Instalación
+## Instalaciï¿½n
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -24,10 +24,10 @@ IA_CLIENT_SECRET=secreto_largo_unico
 IA_TASK=facturas
 ```
 
-`OPENAI_API_KEY` ya no se configura en este workspace cuando se usa backend remoto.
+`OPENAI_API_KEY` no se configura en este workspace del cliente.
 
 ## Modo backend remoto (recomendado para instalar en PCs de clientes)
-En cliente no se expone `OPENAI_API_KEY`. Los lectores (`v5` y `v1`) usan backend cuando detectan:
+En cliente no se expone `OPENAI_API_KEY`. Los lectores (`v5` y `v1`) usan solo backend remoto:
 ```
 IA_BACKEND_URL=http://tu-servidor:8787
 IA_BACKEND_ROUTE=/v1/process
@@ -36,7 +36,7 @@ IA_CLIENT_SECRET=secreto_largo_unico
 IA_TASK=facturas
 ```
 
-Si `IA_BACKEND_URL` está definido, el script usa firma HMAC (`timestamp + nonce + body`) y no requiere `OPENAI_API_KEY` local.
+El script usa firma HMAC (`timestamp + nonce + body`) y no permite `OPENAI_API_KEY` local en cliente.
 
 ### Backend proxy (ubicado en wsAlfa)
 El backend ahora vive en: `e:\Dev\wsAlfa\ia_backend\ia_backend_proxy_server.py`
@@ -56,12 +56,12 @@ cd e:\Dev\wsAlfa
 python .\ia_backend\ia_backend_proxy_server.py
 ```
 
-## Uso básico (facturas)
+## Uso bï¿½sico (facturas)
 ```powershell
-python .\lector_facturas_to_json_v5.py factura.pdf --outdir E:\temp
+python .\lector_facturas_to_json_v5.py FACT_3hojasEn1.pdf --outdir E:\app\IA_ProcesarDocumentos\
 ```
 
-## Varias páginas (imágenes)
+## Varias pï¿½ginas (imï¿½genes)
 ```powershell
 python .\lector_facturas_to_json_v5.py fac1.jpg fac2.jpg --outdir E:\temp
 ```
@@ -76,16 +76,16 @@ python .\lector_facturas_to_json_v5.py fac1.jpg fac2.jpg --prompt-file E:\DocPro
 python .\lector_facturas_to_json_v5.py fac1.jpg --outdir E:\temp --gui
 ```
 
-## Modo por página (mejora tablas largas)
+## Modo por pï¿½gina (mejora tablas largas)
 ```powershell
 python .\lector_facturas_to_json_v5.py fac1.jpg fac2.jpg --outdir E:\temp --per-page
 ```
 
 ## Auto-ajuste (tile + per-page)
-Auto-ajusta parámetros según cantidad de páginas:
-- 1 página: `tile=3`, `per-page` OFF
-- 2-3 páginas: `tile=4`, `per-page` ON
-- 4+ páginas: `tile=5`, `per-page` ON
+Auto-ajusta parï¿½metros segï¿½n cantidad de pï¿½ginas:
+- 1 pï¿½gina: `tile=3`, `per-page` OFF
+- 2-3 pï¿½ginas: `tile=4`, `per-page` ON
+- 4+ pï¿½ginas: `tile=5`, `per-page` ON
 ```powershell
 python .\lector_facturas_to_json_v5.py fac1.jpg fac2.jpg --outdir E:\temp --auto
 ```
@@ -101,15 +101,15 @@ python .\lector_facturas_to_json_v5.py fac1.jpg fac2.jpg --outdir E:\temp --per-
 python .\lector_facturas_to_json_v5.py fac1.jpg --model gpt-4.1 --outdir E:\temp
 ```
 ****************************************************************************************************
-Para liquidaciones, el modelo por defecto es `gpt-4.1`. Podés cambiarlo con `--model`.
+Para liquidaciones, el modelo por defecto es `gpt-4.1`. Podï¿½s cambiarlo con `--model`.
 ****************************************************************************************************
-## Uso básico (liquidaciones de tarjetas)
+## Uso bï¿½sico (liquidaciones de tarjetas)
 Genera un archivo de texto con encabezado y luego dos columnas: `CONCEPTO|IMPORTE`.
 ```powershell
 python .\lector_liquidaciones_to_json_v1.py liquidacion.pdf --outdir E:\temp
 ```
 
-## Varias páginas (liquidaciones)
+## Varias pï¿½ginas (liquidaciones)
 ```powershell
 python .\lector_liquidaciones_to_json_v1.py img1.jpg img2.jpg --outdir E:\temp
 ```
@@ -124,7 +124,7 @@ python .\lector_liquidaciones_to_json_v1.py liquidacion.pdf --prompt-file E:\Doc
 python .\lector_liquidaciones_to_json_v1.py liquidacion.pdf --outdir E:\temp --gui
 ```
 
-## Modo por página (liquidaciones)
+## Modo por pï¿½gina (liquidaciones)
 ```powershell
 python .\lector_liquidaciones_to_json_v1.py img1.jpg img2.jpg --outdir E:\temp --per-page
 ```
@@ -135,29 +135,29 @@ python .\lector_liquidaciones_to_json_v1.py img1.jpg img2.jpg --outdir E:\temp -
 ```
 
 ## Notas
-- `--tile` solo aplica a imágenes (JPG/PNG/WEBP). Para PDF se ignora.
-- Máximo 5 archivos por ejecución.
+- `--tile` solo aplica a imï¿½genes (JPG/PNG/WEBP). Para PDF se ignora.
+- Mï¿½ximo 5 archivos por ejecuciï¿½n.
 - Para liquidaciones, la salida es `.txt` con este formato:
-  - Línea 1: nombre del banco
-  - Línea 2: nombre de la tarjeta
-  - Línea 3: período (mes/año)
-  - Línea 4: concepto (máx. 50 caracteres)
-  - Línea 5: `CONCEPTO|IMPORTE`
-  - Líneas siguientes: conceptos e importes
-- Para Banco Nación, además se genera un control diario en `*_control_diarios.xls` (tabulado).
-- Se valida integridad básica: suma de `ROWS.Total` vs `TOTALES.Neto gravado` (o `TOTALES.Total`). Si el desvío supera 3%, se agrega una advertencia en `meta.observaciones`.
+  - Lï¿½nea 1: nombre del banco
+  - Lï¿½nea 2: nombre de la tarjeta
+  - Lï¿½nea 3: perï¿½odo (mes/aï¿½o)
+  - Lï¿½nea 4: concepto (mï¿½x. 50 caracteres)
+  - Lï¿½nea 5: `CONCEPTO|IMPORTE`
+  - Lï¿½neas siguientes: conceptos e importes
+- Para Banco Naciï¿½n, ademï¿½s se genera un control diario en `*_control_diarios.xls` (tabulado).
+- Se valida integridad bï¿½sica: suma de `ROWS.Total` vs `TOTALES.Neto gravado` (o `TOTALES.Total`). Si el desvï¿½o supera 3%, se agrega una advertencia en `meta.observaciones`.
 - Si en el texto aparece "Cantidad de items: N" y se detectan menos filas, se agrega una advertencia en `meta.observaciones`.
 
 ## Troubleshooting
-### Error: `No module named 'openai'`
-Activá el entorno y reinstalá dependencias:
+### Error: backend no configurado (`IA_BACKEND_URL`)
+Activï¿½ el entorno y reinstalï¿½ dependencias:
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
 
 ### Error PyInstaller en Server 2012: `Failed to load Python DLL ... python311.dll`
-Server 2012 no soporta Python 3.11. Rebuild con Python 3.10 x64 y usá `--onedir`.
+Server 2012 no soporta Python 3.11. Rebuild con Python 3.10 x64 y usï¿½ `--onedir`.
 
 
 ## Empaquetado (opcional)
@@ -168,5 +168,7 @@ pyinstaller --onefile --noconsole lector_liquidaciones_to_json_v1.py
 ```
 
  
+
+
 
 
