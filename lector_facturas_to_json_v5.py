@@ -968,6 +968,12 @@ def main() -> None:
         description="Lector de facturas -> JSON (1 a 5 páginas). Usa backend remoto (IA_BACKEND_URL + credenciales).",
     )
     parser.add_argument("files", nargs="*", help="1 a 5 archivos (imágenes/PDF) en orden de páginas")
+    parser.add_argument(
+        "--idcliente",
+        type=int,
+        default=None,
+        help="Id de cliente para auditoria backend (IA_IDCLIENTE/IDCLIENTE).",
+    )
     parser.add_argument("--outdir", default="", help="Carpeta de salida. Default: TEMP del sistema")
     parser.add_argument("--prompt-file", default="", help="Archivo .txt con prompt personalizado")
     parser.add_argument("--model", default="gpt-4.1-mini", help="Modelo a usar (default: gpt-4.1-mini)")
@@ -1022,6 +1028,9 @@ def main() -> None:
         try:
             status("Cargando .env / variables...")
             load_env_near_app()
+            if args.idcliente is not None:
+                os.environ["IA_IDCLIENTE"] = str(args.idcliente)
+                os.environ["IDCLIENTE"] = str(args.idcliente)
 
             if not backend_enabled():
                 raise SystemExit(

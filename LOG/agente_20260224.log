@@ -1,0 +1,18 @@
+[2026-02-24 12:34:47] INICIO | RUTAS_CLIENTE=C:\recibir;C:\recibir\TARJETAS | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=Proceso_automatico
+[2026-02-24 12:34:47] CONFIG|WARN|No se pudo consultar configuracion SQL: ('42S02', "[42S02] [Microsoft][SQL Server Native Client 11.0][SQL Server]El nombre de objeto 'Configuracion' no es válido. (208) (SQLExecDirectW)")
+[2026-02-24 12:34:47] CLIENTE|RESULT|Base=C:\recibir|IdCliente=1|Procesados=0|Saltados=0|NoListos=0|Errores=1
+[2026-02-24 12:34:47] CLIENTE|RESULT|Base=C:\recibir\TARJETAS|IdCliente=1|Procesados=0|Saltados=0|NoListos=0|Errores=1
+[2026-02-24 12:34:47] RESULT=ERROR | Procesados=0 | Saltados=0 | NoListos=0 | Errores=2
+[2026-02-24 12:35:46] INICIO | RUTAS_CLIENTE=C:\recibir;C:\recibir\TARJETAS | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=Proceso_automatico
+[2026-02-24 12:35:46] CONFIG|WARN|No se pudo consultar configuracion SQL: ('42S02', "[42S02] [Microsoft][SQL Server Native Client 11.0][SQL Server]El nombre de objeto 'Configuracion' no es válido. (208) (SQLExecDirectW)")
+[2026-02-24 12:35:46] CLIENTE|RESULT|Base=C:\recibir|IdCliente=1|Procesados=0|Saltados=0|NoListos=0|Errores=1
+[2026-02-24 12:35:46] CLIENTE|RESULT|Base=C:\recibir\TARJETAS|IdCliente=1|Procesados=0|Saltados=0|NoListos=0|Errores=1
+[2026-02-24 12:35:46] RESULT=ERROR | Procesados=0 | Saltados=0 | NoListos=0 | Errores=2
+[2026-02-24 12:38:51] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=Proceso_automatico
+[2026-02-24 12:38:51] CONFIG|WARN|No se pudo consultar configuracion SQL: ('42S02', "[42S02] [Microsoft][SQL Server Native Client 11.0][SQL Server]El nombre de objeto 'Configuracion' no es válido. (208) (SQLExecDirectW)")
+[2026-02-24 12:38:51] CLIENTE|RESULT|Base=C:\recibir|IdCliente=1|Procesados=0|Saltados=0|NoListos=0|Errores=1
+[2026-02-24 12:38:51] RESULT=ERROR | Procesados=0 | Saltados=0 | NoListos=0 | Errores=1
+[2026-02-24 12:46:12] INICIO | RUTAS_CLIENTE=C:\recibir;C:\prueba | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=Proceso_automatico
+[2026-02-24 12:46:12] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=0|Saltados=0|NoListos=0|Errores=0
+[2026-02-24 12:46:12] CLIENTE|RESULT|Base=C:\prueba|IdCliente=1|Procesados=0|Saltados=0|NoListos=0|Errores=1
+[2026-02-24 12:46:12] RESULT=ERROR | Procesados=0 | Saltados=0 | NoListos=0 | Errores=1
