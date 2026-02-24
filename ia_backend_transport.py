@@ -11,8 +11,15 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 
+DEFAULT_IA_BACKEND_URL = "http://alfanetac.ddns.net:8805"
+DEFAULT_IA_BACKEND_ROUTE = "/v1/process"
+DEFAULT_IA_CLIENT_ID = "cliente_demo"
+DEFAULT_IA_CLIENT_SECRET = "cambiar_por_secreto_largo"
+
+
 def backend_enabled() -> bool:
-    return bool((os.getenv("IA_BACKEND_URL") or "").strip())
+    base_url = (os.getenv("IA_BACKEND_URL") or "").strip() or DEFAULT_IA_BACKEND_URL
+    return bool(base_url)
 
 
 def _build_signature(secret: str, timestamp: str, nonce: str, body: str) -> str:
@@ -39,10 +46,10 @@ def call_backend(
     source_filename: Optional[str] = None,
     timeout_seconds: int = 300,
 ) -> str:
-    base_url = (os.getenv("IA_BACKEND_URL") or "").strip().rstrip("/")
-    client_id = (os.getenv("IA_CLIENT_ID") or "").strip()
-    client_secret = (os.getenv("IA_CLIENT_SECRET") or "").strip()
-    route = (os.getenv("IA_BACKEND_ROUTE") or "/v1/process").strip()
+    base_url = ((os.getenv("IA_BACKEND_URL") or "").strip() or DEFAULT_IA_BACKEND_URL).rstrip("/")
+    client_id = (os.getenv("IA_CLIENT_ID") or "").strip() or DEFAULT_IA_CLIENT_ID
+    client_secret = (os.getenv("IA_CLIENT_SECRET") or "").strip() or DEFAULT_IA_CLIENT_SECRET
+    route = (os.getenv("IA_BACKEND_ROUTE") or "").strip() or DEFAULT_IA_BACKEND_ROUTE
     task = (os.getenv("IA_TASK") or "").strip().upper()
     idcliente = (os.getenv("IA_IDCLIENTE") or os.getenv("IDCLIENTE") or "").strip()
     source_filename = (source_filename or "").strip() or _infer_source_filename(content_blocks)

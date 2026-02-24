@@ -203,6 +203,19 @@ def load_env_near_app() -> None:
         load_dotenv(override=False)
 
 
+def apply_runtime_env_overrides(args: argparse.Namespace) -> None:
+    if args.backend_url:
+        os.environ["IA_BACKEND_URL"] = args.backend_url.strip()
+    if args.backend_route:
+        os.environ["IA_BACKEND_ROUTE"] = args.backend_route.strip()
+    if args.client_id:
+        os.environ["IA_CLIENT_ID"] = args.client_id.strip()
+    if args.client_secret:
+        os.environ["IA_CLIENT_SECRET"] = args.client_secret.strip()
+    if args.ia_task:
+        os.environ["IA_TASK"] = args.ia_task.strip()
+
+
 def safe_basename(file_path: str) -> str:
     name = Path(file_path).stem
     name = re.sub(r"[^a-zA-Z0-9_\-]+", "_", name).strip("_")
@@ -1650,6 +1663,13 @@ def main() -> None:
         default=0,
         help="Divide PDFs en bloques de N páginas para documentos grandes. 0 = no dividir.",
     )
+    parser.add_argument("--env-file", default="", help="Archivo .env alternativo para pruebas.")
+    parser.add_argument("--no-local-env", action="store_true", help="No cargar .env junto al exe/script.")
+    parser.add_argument("--backend-url", default="", help="Override IA_BACKEND_URL.")
+    parser.add_argument("--backend-route", default="", help="Override IA_BACKEND_ROUTE.")
+    parser.add_argument("--client-id", default="", help="Override IA_CLIENT_ID.")
+    parser.add_argument("--client-secret", default="", help="Override IA_CLIENT_SECRET.")
+    parser.add_argument("--ia-task", default="", help="Override IA_TASK/opcion.")
     args = parser.parse_args()
 
     ui = None
@@ -1673,7 +1693,11 @@ def main() -> None:
     def worker():
         try:
             status("Cargando .env / variables...")
-            load_env_near_app()
+            if not args.no_local_env:
+                load_env_near_app()
+            if args.env_file:
+                load_dotenv(dotenv_path=args.env_file, override=True)
+            apply_runtime_env_overrides(args)
             if args.idcliente is not None:
                 os.environ["IA_IDCLIENTE"] = str(args.idcliente)
                 os.environ["IDCLIENTE"] = str(args.idcliente)

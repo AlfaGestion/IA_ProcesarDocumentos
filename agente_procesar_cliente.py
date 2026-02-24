@@ -46,6 +46,11 @@ DEFAULT_AGENT_IA_TASK = "PROCESO_AUTOMATICO"
 DEFAULT_CONFIG_TABLE = "clientes"
 DEFAULT_CONFIG_ID_COL = "idcliente"
 DEFAULT_CONFIG_ROUTE_COL = "RutaIA_procesar"
+DEFAULT_SQL_USER = "ALFA_CENTRAL"
+DEFAULT_SQL_PASSWORD = "ALFA_CENTRAL"
+DEFAULT_SQL_SERVER = "10.56.0.1"
+DEFAULT_SQL_DATABASE = "ALFA_CENTRAL"
+DEFAULT_SQL_DRIVER = "SQL Server Native Client 11.0"
 
 
 def _now() -> str:
@@ -71,8 +76,8 @@ def _append_text(log_path: Path, text: str) -> None:
         f.write(text.rstrip() + "\n")
 
 
-def _load_dotenv_file(dotenv_path: Path) -> None:
-    """Carga variables desde .env solo si no existen en el entorno actual."""
+def _load_dotenv_file(dotenv_path: Path, override: bool = False) -> None:
+    """Carga variables desde .env, opcionalmente sobrescribiendo entorno actual."""
     if not dotenv_path.exists() or not dotenv_path.is_file():
         return
     for raw_line in dotenv_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -82,7 +87,7 @@ def _load_dotenv_file(dotenv_path: Path) -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and os.getenv(key) is None:
+        if key and (override or os.getenv(key) is None):
             os.environ[key] = value
 
 
@@ -152,6 +157,13 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=None,
         help="Si se informa, busca la RutaIA_procesar en configuracion y procesa solo ese cliente.",
     )
+    parser.add_argument("--env-file", default="", help="Archivo .env alternativo para pruebas.")
+    parser.add_argument("--no-local-env", action="store_true", help="No cargar .env junto al exe/script.")
+    parser.add_argument("--backend-url", default="", help="Override IA_BACKEND_URL.")
+    parser.add_argument("--backend-route", default="", help="Override IA_BACKEND_ROUTE.")
+    parser.add_argument("--client-id", default="", help="Override IA_CLIENT_ID.")
+    parser.add_argument("--client-secret", default="", help="Override IA_CLIENT_SECRET.")
+    parser.add_argument("--ia-task", default="", help="Override AGENTE_IA_TASK.")
     return parser.parse_args(argv)
 
 
@@ -164,11 +176,11 @@ def _norm_path_str(value: str) -> str:
 
 
 def _sql_connection_string_from_env() -> str:
-    driver = (os.getenv("SQL_DRIVER") or "").strip() or "ODBC Driver 17 for SQL Server"
-    server = (os.getenv("SQL_SERVER") or "").strip()
-    database = (os.getenv("SQL_DATABASE") or "").strip()
-    user = (os.getenv("SQL_USER") or "").strip()
-    password = (os.getenv("SQL_PASSWORD") or "").strip()
+    driver = (os.getenv("SQL_DRIVER") or "").strip() or DEFAULT_SQL_DRIVER
+    server = (os.getenv("SQL_SERVER") or "").strip() or DEFAULT_SQL_SERVER
+    database = (os.getenv("SQL_DATABASE") or "").strip() or DEFAULT_SQL_DATABASE
+    user = (os.getenv("SQL_USER") or "").strip() or DEFAULT_SQL_USER
+    password = (os.getenv("SQL_PASSWORD") or "").strip() or DEFAULT_SQL_PASSWORD
 
     if not server or not database:
         return ""
@@ -583,7 +595,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     agent_log_path = log_root / f"agente_{day_stamp}.log"
     lock_path = log_root / "agente_procesar_cliente.lock"
     run_start = _now()
-    _load_dotenv_file(project_dir / ".env")
+    if not args.no_local_env:
+        _load_dotenv_file(project_dir / ".env")
+    if args.env_file:
+        _load_dotenv_file(Path(args.env_file), override=True)
+    if args.backend_url:
+        os.environ["IA_BACKEND_URL"] = args.backend_url.strip()
+    if args.backend_route:
+        os.environ["IA_BACKEND_ROUTE"] = args.backend_route.strip()
+    if args.client_id:
+        os.environ["IA_CLIENT_ID"] = args.client_id.strip()
+    if args.client_secret:
+        os.environ["IA_CLIENT_SECRET"] = args.client_secret.strip()
+    if args.ia_task:
+        os.environ["AGENTE_IA_TASK"] = args.ia_task.strip()
     stable_seconds = int(os.getenv("ARCHIVO_ESTABLE_SEGUNDOS", str(FILE_STABLE_SECONDS)) or FILE_STABLE_SECONDS)
     lock_stale_hours = int(os.getenv("LOCK_STALE_HORAS", str(LOCK_STALE_HOURS)) or LOCK_STALE_HOURS)
     force_reprocess = os.getenv("REPROCESAR_TODO", "0").strip().lower() in {"1", "true", "yes", "si", "y"}
