@@ -1,27 +1,21 @@
-[2026-02-24 14:18:52] INICIO | RUTAS_CLIENTE=C:\recibir;C:\prueba | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:18:52] CONFIG|WARN|No se pudo consultar configuracion SQL: ('08001', '[08001] [Microsoft][SQL Server Native Client 11.0]SQL Server Network Interfaces: No hay credenciales disponibles en el paquete de seguridad\r\n (-2146893042) (SQLDriverConnect); [08001] [Microsoft][SQL Server Native Client 11.0]SQL Server Network Interfaces: No hay credenciales disponibles en el paquete de seguridad\r\n (-2146893042); [08001] [Microsoft][SQL Server Native Client 11.0]Client unable to establish connection (-2146893042); [08001] [Microsoft][SQL Server Native Client 11.0]A network-related or instance-specific error has occurred while establishing a connection to SQL Server. Server is not found or not accessible. Check if instance name is correct and if SQL Server is configured to allow remote connections. For more information see SQL Server Books Online. (-2146893042)')
-[2026-02-24 14:18:52] CLIENTE|RESULT|Base=C:\recibir|IdCliente=1|Procesados=0|Saltados=0|NoListos=0|Errores=1
-[2026-02-24 14:18:52] CLIENTE|RESULT|Base=C:\prueba|IdCliente=1|Procesados=0|Saltados=0|NoListos=0|Errores=1
-[2026-02-24 14:18:52] RESULT=ERROR | Procesados=0 | Saltados=0 | NoListos=0 | Errores=2
-[2026-02-24 14:20:02] RESULT=SKIP | Motivo=Lock activo C:\app\IA_ProcesarDocumentos\LOG\agente_procesar_cliente.lock
-[2026-02-24 14:20:27] RESULT=SKIP | Motivo=Lock activo C:\app\IA_ProcesarDocumentos\LOG\agente_procesar_cliente.lock
-[2026-02-24 14:20:45] RESULT=SKIP | Motivo=Lock activo C:\app\IA_ProcesarDocumentos\LOG\agente_procesar_cliente.lock
-[2026-02-24 14:20:55] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:21:25] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=4|Saltados=0|NoListos=0|Errores=4
-[2026-02-24 14:21:25] RESULT=ERROR | Procesados=4 | Saltados=0 | NoListos=0 | Errores=4
-[2026-02-24 14:21:20] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:21:50] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=4|Saltados=0|NoListos=0|Errores=4
-[2026-02-24 14:21:50] RESULT=ERROR | Procesados=4 | Saltados=0 | NoListos=0 | Errores=4
-[2026-02-24 14:24:02] RESULT=SKIP | Motivo=Lock activo C:\app\IA_ProcesarDocumentos\LOG\agente_procesar_cliente.lock
-[2026-02-24 14:23:14] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:24:04] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=4|Saltados=0|NoListos=0|Errores=3
-[2026-02-24 14:24:04] RESULT=ERROR | Procesados=4 | Saltados=0 | NoListos=0 | Errores=3
-[2026-02-24 14:25:01] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:26:14] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=4|Saltados=0|NoListos=0|Errores=2
-[2026-02-24 14:26:14] RESULT=ERROR | Procesados=4 | Saltados=0 | NoListos=0 | Errores=2
-[2026-02-24 14:26:27] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:26:36] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=2|Saltados=2|NoListos=0|Errores=2
-[2026-02-24 14:26:36] RESULT=ERROR | Procesados=2 | Saltados=2 | NoListos=0 | Errores=2
-[2026-02-24 14:46:30] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskBase=PROCESO_AUTOMATICO
-[2026-02-24 14:48:43] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=1|Saltados=3|NoListos=0|Errores=0
-[2026-02-24 14:48:43] RESULT=OK | Procesados=1 | Saltados=3 | NoListos=0 | Errores=0
+[2026-02-24 14:52:43] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskBase=PROCESO_AUTOMATICO
+[2026-02-24 14:52:43] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=0|Saltados=4|NoListos=0|Errores=0
+[2026-02-24 14:52:43] RESULT=OK | Procesados=0 | Saltados=4 | NoListos=0 | Errores=0
+[2026-02-24 14:53:42] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskBase=PROCESO_AUTOMATICO
+[2026-02-24 15:01:02] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=4|Saltados=0|NoListos=0|Errores=2
+[2026-02-24 15:01:02] RESULT=ERROR | Procesados=4 | Saltados=0 | NoListos=0 | Errores=2
+[2026-02-24 15:06:16] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskBase=PROCESO_AUTOMATICO
+[2026-02-24 15:09:54] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=2|Saltados=0|NoListos=0|Errores=0
+[2026-02-24 15:09:54] RESULT=OK | Procesados=2 | Saltados=0 | NoListos=0 | Errores=0
+[2026-02-24 15:14:42] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskBase=PROCESO_AUTOMATICO
+[2026-02-24 15:14:42] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=0|Saltados=2|NoListos=0|Errores=0
+[2026-02-24 15:14:42] RESULT=OK | Procesados=0 | Saltados=2 | NoListos=0 | Errores=0
+[2026-02-24 15:15:12] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskBase=PROCESO_AUTOMATICO
+[2026-02-24 15:19:06] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=2|Saltados=0|NoListos=0|Errores=0
+[2026-02-24 15:19:06] RESULT=OK | Procesados=2 | Saltados=0 | NoListos=0 | Errores=0
+[2026-02-24 15:20:13] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskBase=PROCESO_AUTOMATICO
+[2026-02-24 15:20:13] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=0|Saltados=2|NoListos=0|Errores=0
+[2026-02-24 15:20:13] RESULT=OK | Procesados=0 | Saltados=2 | NoListos=0 | Errores=0
+[2026-02-24 15:20:28] INICIO | RUTAS_CLIENTE=C:\recibir | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskBase=PROCESO_AUTOMATICO
+[2026-02-24 15:24:57] CLIENTE|RESULT|Base=C:\recibir|IdCliente=112011013|Procesados=2|Saltados=0|NoListos=0|Errores=0
+[2026-02-24 15:24:57] RESULT=OK | Procesados=2 | Saltados=0 | NoListos=0 | Errores=0

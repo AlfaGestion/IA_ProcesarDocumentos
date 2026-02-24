@@ -1,81 +1,57 @@
-[2026-02-24 14:18:52] INICIO | CLIENTE=C:\recibir | IdCliente=1 | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:18:52] CLIENTE|INICIO|Base=C:\recibir|IdCliente=1
-[2026-02-24 14:18:52] CLIENTE|ERROR|Base=C:\recibir|IdCliente=1|No esta informada la carpeta en configuracion (RutaIA_procesar). Se usa idcliente=1.
-[2026-02-24 14:18:52] TARJETAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\TARJETAS
-[2026-02-24 14:18:52] COMPRAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\COMPRAS
-[2026-02-24 14:18:52] RESULT=ERROR | Procesados=0 | Saltados=0 | NoListos=0 | Errores=1
-[2026-02-24 14:20:55] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:20:55] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
-[2026-02-24 14:20:55] TARJETAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\TARJETAS
-[2026-02-24 14:21:07] TARJETAS[recibir]|ERROR|LiquidacionMensual-074-28775041-VisaD_bito.pdf|Log=LiquidacionMensual-074-28775041-VisaD_bito.pdf.log|GroupSize=1
-[2026-02-24 14:21:16] TARJETAS[recibir]|ERROR|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|Log=RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf.log|GroupSize=1
-[2026-02-24 14:21:16] COMPRAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\COMPRAS
-[2026-02-24 14:21:16] COMPRAS[recibir]|INFO|PreAgrupado=2|Multipagina=0
-[2026-02-24 14:21:21] COMPRAS[recibir]|ERROR|FACT_3hojasEn1.pdf|Log=FACT_3hojasEn1.pdf.log|GroupSize=1
-[2026-02-24 14:21:25] COMPRAS[recibir]|ERROR|FACT_RE.pdf|Log=FACT_RE.pdf.log|GroupSize=1
-[2026-02-24 14:21:25] RESULT=ERROR | Procesados=4 | Saltados=0 | NoListos=0 | Errores=4
-[2026-02-24 14:21:20] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:21:20] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
-[2026-02-24 14:21:20] TARJETAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\TARJETAS
-[2026-02-24 14:21:20] TARJETAS[recibir]|REPROCESS|LiquidacionMensual-074-28775041-VisaD_bito.pdf|IgnoraLog=LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
-[2026-02-24 14:21:20] TARJETAS[recibir]|REPROCESS|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|IgnoraLog=RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
-[2026-02-24 14:21:31] TARJETAS[recibir]|ERROR|LiquidacionMensual-074-28775041-VisaD_bito.pdf|Log=LiquidacionMensual-074-28775041-VisaD_bito.pdf.log|GroupSize=1
-[2026-02-24 14:21:41] TARJETAS[recibir]|ERROR|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|Log=RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf.log|GroupSize=1
-[2026-02-24 14:21:41] COMPRAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\COMPRAS
-[2026-02-24 14:21:41] COMPRAS[recibir]|REPROCESS|FACT_3hojasEn1.pdf|IgnoraLog=FACT_3hojasEn1.pdf.log
-[2026-02-24 14:21:41] COMPRAS[recibir]|REPROCESS|FACT_RE.pdf|IgnoraLog=FACT_RE.pdf.log
-[2026-02-24 14:21:41] COMPRAS[recibir]|INFO|PreAgrupado=2|Multipagina=0
-[2026-02-24 14:21:46] COMPRAS[recibir]|ERROR|FACT_3hojasEn1.pdf|Log=FACT_3hojasEn1.pdf.log|GroupSize=1
-[2026-02-24 14:21:50] COMPRAS[recibir]|ERROR|FACT_RE.pdf|Log=FACT_RE.pdf.log|GroupSize=1
-[2026-02-24 14:21:50] RESULT=ERROR | Procesados=4 | Saltados=0 | NoListos=0 | Errores=4
-[2026-02-24 14:23:14] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:23:14] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
-[2026-02-24 14:23:14] TARJETAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\TARJETAS
-[2026-02-24 14:23:14] TARJETAS[recibir]|REPROCESS|LiquidacionMensual-074-28775041-VisaD_bito.pdf|IgnoraLog=LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
-[2026-02-24 14:23:14] TARJETAS[recibir]|REPROCESS|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|IgnoraLog=RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
-[2026-02-24 14:23:44] TARJETAS[recibir]|OK|LiquidacionMensual-074-28775041-VisaD_bito.pdf|GroupSize=1
-[2026-02-24 14:23:56] TARJETAS[recibir]|ERROR|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|Log=RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf.log|GroupSize=1
-[2026-02-24 14:23:56] COMPRAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\COMPRAS
-[2026-02-24 14:23:56] COMPRAS[recibir]|REPROCESS|FACT_3hojasEn1.pdf|IgnoraLog=FACT_3hojasEn1.pdf.log
-[2026-02-24 14:23:56] COMPRAS[recibir]|REPROCESS|FACT_RE.pdf|IgnoraLog=FACT_RE.pdf.log
-[2026-02-24 14:23:56] COMPRAS[recibir]|INFO|PreAgrupado=2|Multipagina=0
-[2026-02-24 14:24:01] COMPRAS[recibir]|ERROR|FACT_3hojasEn1.pdf|Log=FACT_3hojasEn1.pdf.log|GroupSize=1
-[2026-02-24 14:24:04] COMPRAS[recibir]|ERROR|FACT_RE.pdf|Log=FACT_RE.pdf.log|GroupSize=1
-[2026-02-24 14:24:04] RESULT=ERROR | Procesados=4 | Saltados=0 | NoListos=0 | Errores=3
-[2026-02-24 14:25:01] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:25:01] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
-[2026-02-24 14:25:01] TARJETAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\TARJETAS
-[2026-02-24 14:25:01] TARJETAS[recibir]|REPROCESS|LiquidacionMensual-074-28775041-VisaD_bito.pdf|IgnoraLog=LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
-[2026-02-24 14:25:01] TARJETAS[recibir]|REPROCESS|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|IgnoraLog=RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
-[2026-02-24 14:25:28] TARJETAS[recibir]|OK|LiquidacionMensual-074-28775041-VisaD_bito.pdf|GroupSize=1
-[2026-02-24 14:25:54] TARJETAS[recibir]|OK|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|GroupSize=1
-[2026-02-24 14:25:54] COMPRAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\COMPRAS
-[2026-02-24 14:25:54] COMPRAS[recibir]|REPROCESS|FACT_3hojasEn1.pdf|IgnoraLog=FACT_3hojasEn1.pdf.log
-[2026-02-24 14:25:54] COMPRAS[recibir]|REPROCESS|FACT_RE.pdf|IgnoraLog=FACT_RE.pdf.log
-[2026-02-24 14:25:54] COMPRAS[recibir]|INFO|PreAgrupado=2|Multipagina=0
-[2026-02-24 14:26:10] COMPRAS[recibir]|ERROR|FACT_3hojasEn1.pdf|Log=FACT_3hojasEn1.pdf.log|GroupSize=1
-[2026-02-24 14:26:14] COMPRAS[recibir]|ERROR|FACT_RE.pdf|Log=FACT_RE.pdf.log|GroupSize=1
-[2026-02-24 14:26:14] RESULT=ERROR | Procesados=4 | Saltados=0 | NoListos=0 | Errores=2
-[2026-02-24 14:26:27] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=proceso_automatico
-[2026-02-24 14:26:28] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
-[2026-02-24 14:26:28] TARJETAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\TARJETAS
-[2026-02-24 14:26:28] TARJETAS[recibir]|SKIP|LiquidacionMensual-074-28775041-VisaD_bito.pdf|YaProcesadoLog=LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
-[2026-02-24 14:26:28] TARJETAS[recibir]|SKIP|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|YaProcesadoLog=RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
-[2026-02-24 14:26:28] COMPRAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\COMPRAS
-[2026-02-24 14:26:28] COMPRAS[recibir]|RETRY|FACT_3hojasEn1.pdf|PrevStatus=ERROR
-[2026-02-24 14:26:28] COMPRAS[recibir]|RETRY|FACT_RE.pdf|PrevStatus=ERROR
-[2026-02-24 14:26:28] COMPRAS[recibir]|INFO|PreAgrupado=2|Multipagina=0
-[2026-02-24 14:26:32] COMPRAS[recibir]|ERROR|FACT_3hojasEn1.pdf|Log=FACT_3hojasEn1.pdf.log|GroupSize=1
-[2026-02-24 14:26:36] COMPRAS[recibir]|ERROR|FACT_RE.pdf|Log=FACT_RE.pdf.log|GroupSize=1
-[2026-02-24 14:26:36] RESULT=ERROR | Procesados=2 | Saltados=2 | NoListos=0 | Errores=2
-[2026-02-24 14:46:30] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskTarjetas=AUTOMATICO_LIQUIDACION | IATaskCompras=AUTOMATICO_FACTURA
-[2026-02-24 14:46:30] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
-[2026-02-24 14:46:30] TARJETAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\TARJETAS
-[2026-02-24 14:46:30] TARJETAS[recibir]|SKIP|LiquidacionMensual-074-28775041-VisaD_bito.pdf|YaProcesadoLog=LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
-[2026-02-24 14:46:30] TARJETAS[recibir]|SKIP|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|YaProcesadoLog=RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
-[2026-02-24 14:46:30] COMPRAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\COMPRAS
-[2026-02-24 14:46:30] COMPRAS[recibir]|SKIP|FACT_3hojasEn1.pdf|YaProcesadoLog=FACT_3hojasEn1.pdf.log
-[2026-02-24 14:46:30] COMPRAS[recibir]|RETRY|FACT_RE.pdf|PrevStatus=ERROR
-[2026-02-24 14:46:30] COMPRAS[recibir]|INFO|PreAgrupado=1|Multipagina=0
-[2026-02-24 14:48:43] COMPRAS[recibir]|OK|FACT_RE.pdf|GroupSize=1
-[2026-02-24 14:48:43] RESULT=OK | Procesados=1 | Saltados=3 | NoListos=0 | Errores=0
+[2026-02-24 14:52:43] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskTarjetas=AUTOMATICO_LIQUIDACION | IATaskCompras=AUTOMATICO_FACTURA
+[2026-02-24 14:52:43] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
+[2026-02-24 14:52:43] TARJETAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\TARJETAS
+[2026-02-24 14:52:43] TARJETAS[recibir]|SKIP|LiquidacionMensual-074-28775041-VisaD_bito.pdf|YaProcesadoLog=LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
+[2026-02-24 14:52:43] TARJETAS[recibir]|SKIP|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|YaProcesadoLog=RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
+[2026-02-24 14:52:43] COMPRAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\COMPRAS
+[2026-02-24 14:52:43] COMPRAS[recibir]|SKIP|FACT_3hojasEn1.pdf|YaProcesadoLog=FACT_3hojasEn1.pdf.log
+[2026-02-24 14:52:43] COMPRAS[recibir]|SKIP|FACT_RE.pdf|YaProcesadoLog=FACT_RE.pdf.log
+[2026-02-24 14:52:43] RESULT=OK | Procesados=0 | Saltados=4 | NoListos=0 | Errores=0
+[2026-02-24 14:53:42] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskTarjetas=AUTOMATICO_LIQUIDACION | IATaskCompras=AUTOMATICO_FACTURA
+[2026-02-24 14:53:42] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
+[2026-02-24 14:53:42] TARJETAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\TARJETAS
+[2026-02-24 14:54:37] TARJETAS[recibir]|OK|LiquidacionMensual-074-28775041-VisaD_bito.pdf|GroupSize=1
+[2026-02-24 14:55:18] TARJETAS[recibir]|OK|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|GroupSize=1
+[2026-02-24 14:55:18] COMPRAS[recibir]|INFO|Encontrados=2|Folder=C:\recibir\COMPRAS
+[2026-02-24 14:55:18] COMPRAS[recibir]|INFO|PreAgrupado=2|Multipagina=0
+[2026-02-24 14:58:04] COMPRAS[recibir]|ERROR|FACT_3hojasEn1.pdf|Log=FACT_3hojasEn1.pdf.log|GroupSize=1
+[2026-02-24 15:01:02] COMPRAS[recibir]|ERROR|FACT_RE.pdf|Log=FACT_RE.pdf.log|GroupSize=1
+[2026-02-24 15:01:02] RESULT=ERROR | Procesados=4 | Saltados=0 | NoListos=0 | Errores=2
+[2026-02-24 15:06:16] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskTarjetas=AUTOMATICO_LIQUIDACION | IATaskCompras=AUTOMATICO_FACTURA
+[2026-02-24 15:06:16] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
+[2026-02-24 15:06:16] TARJETAS[recibir]|INFO|Encontrados=1|Folder=C:\recibir\TARJETAS
+[2026-02-24 15:07:05] TARJETAS[recibir]|OK|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|GroupSize=1
+[2026-02-24 15:07:05] COMPRAS[recibir]|INFO|Encontrados=1|Folder=C:\recibir\COMPRAS
+[2026-02-24 15:07:05] COMPRAS[recibir]|INFO|PreAgrupado=1|Multipagina=0
+[2026-02-24 15:09:54] COMPRAS[recibir]|OK|FACT_RE.pdf|GroupSize=1
+[2026-02-24 15:09:54] RESULT=OK | Procesados=2 | Saltados=0 | NoListos=0 | Errores=0
+[2026-02-24 15:14:42] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskTarjetas=AUTOMATICO_LIQUIDACION | IATaskCompras=AUTOMATICO_FACTURA
+[2026-02-24 15:14:42] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
+[2026-02-24 15:14:42] TARJETAS[recibir]|INFO|Encontrados=1|Folder=C:\recibir\TARJETAS
+[2026-02-24 15:14:42] TARJETAS[recibir]|SKIP|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|YaProcesadoLog=RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
+[2026-02-24 15:14:42] COMPRAS[recibir]|INFO|Encontrados=1|Folder=C:\recibir\COMPRAS
+[2026-02-24 15:14:42] COMPRAS[recibir]|SKIP|FACT_RE.pdf|YaProcesadoLog=FACT_RE.pdf.log
+[2026-02-24 15:14:42] RESULT=OK | Procesados=0 | Saltados=2 | NoListos=0 | Errores=0
+[2026-02-24 15:15:12] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskTarjetas=AUTOMATICO_LIQUIDACION | IATaskCompras=AUTOMATICO_FACTURA
+[2026-02-24 15:15:13] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
+[2026-02-24 15:15:13] TARJETAS[recibir]|INFO|Encontrados=1|Folder=C:\recibir\TARJETAS
+[2026-02-24 15:15:40] TARJETAS[recibir]|OK|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|GroupSize=1
+[2026-02-24 15:15:40] COMPRAS[recibir]|INFO|Encontrados=1|Folder=C:\recibir\COMPRAS
+[2026-02-24 15:15:40] COMPRAS[recibir]|INFO|PreAgrupado=1|Multipagina=0
+[2026-02-24 15:19:06] COMPRAS[recibir]|OK|FACT_RE.pdf|GroupSize=1
+[2026-02-24 15:19:06] RESULT=OK | Procesados=2 | Saltados=0 | NoListos=0 | Errores=0
+[2026-02-24 15:20:13] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskTarjetas=AUTOMATICO_LIQUIDACION | IATaskCompras=AUTOMATICO_FACTURA
+[2026-02-24 15:20:13] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
+[2026-02-24 15:20:13] TARJETAS[recibir]|INFO|Encontrados=1|Folder=C:\recibir\TARJETAS
+[2026-02-24 15:20:13] TARJETAS[recibir]|SKIP|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|YaProcesadoLog=RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf.log
+[2026-02-24 15:20:13] COMPRAS[recibir]|INFO|Encontrados=1|Folder=C:\recibir\COMPRAS
+[2026-02-24 15:20:13] COMPRAS[recibir]|SKIP|FACT_RE.pdf|YaProcesadoLog=FACT_RE.pdf.log
+[2026-02-24 15:20:13] RESULT=OK | Procesados=0 | Saltados=2 | NoListos=0 | Errores=0
+[2026-02-24 15:20:28] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATaskTarjetas=AUTOMATICO_LIQUIDACION | IATaskCompras=AUTOMATICO_FACTURA
+[2026-02-24 15:20:29] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
+[2026-02-24 15:20:29] TARJETAS[recibir]|INFO|Encontrados=1|Folder=C:\recibir\TARJETAS
+[2026-02-24 15:20:57] TARJETAS[recibir]|OK|RE-LiquidacionMensual-074-28775041-VisaD_bito.pdf|GroupSize=1
+[2026-02-24 15:20:57] COMPRAS[recibir]|INFO|Encontrados=1|Folder=C:\recibir\COMPRAS
+[2026-02-24 15:20:57] COMPRAS[recibir]|INFO|PreAgrupado=1|Multipagina=0
+[2026-02-24 15:24:57] COMPRAS[recibir]|OK|FACT_RE.pdf|GroupSize=1
+[2026-02-24 15:24:57] RESULT=OK | Procesados=2 | Saltados=0 | NoListos=0 | Errores=0
