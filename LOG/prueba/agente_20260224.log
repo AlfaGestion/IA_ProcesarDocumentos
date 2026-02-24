@@ -1,0 +1,6 @@
+[2026-02-24 12:46:12] INICIO | CLIENTE=C:\prueba | IdCliente=1 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=Proceso_automatico
+[2026-02-24 12:46:12] CLIENTE|INICIO|Base=C:\prueba|IdCliente=1
+[2026-02-24 12:46:12] CLIENTE|ERROR|Base=C:\prueba|IdCliente=1|No esta informada la carpeta en configuracion (RutaIA_procesar). Se usa idcliente=1.
+[2026-02-24 12:46:12] TARJETAS[prueba]|INFO|Encontrados=0|Folder=C:\prueba\TARJETAS
+[2026-02-24 12:46:12] COMPRAS[prueba]|INFO|Encontrados=0|Folder=C:\prueba\COMPRAS
+[2026-02-24 12:46:12] RESULT=ERROR | Procesados=0 | Saltados=0 | NoListos=0 | Errores=1

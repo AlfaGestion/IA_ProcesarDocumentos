@@ -1,0 +1,29 @@
+[2026-02-24 12:34:10] INICIO | CLIENTE=C:\recibir | IdCliente=1 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=Proceso_automatico
+[2026-02-24 12:34:10] CLIENTE|INICIO|Base=C:\recibir|IdCliente=1
+[2026-02-24 12:34:10] CLIENTE|ERROR|Base=C:\recibir|IdCliente=1|No esta informada la carpeta en configuracion (RutaIA_procesar). Se usa idcliente=1.
+[2026-02-24 12:34:10] TARJETAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\TARJETAS
+[2026-02-24 12:34:10] COMPRAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\COMPRAS
+[2026-02-24 12:34:10] RESULT=ERROR | Procesados=0 | Saltados=0 | NoListos=0 | Errores=1
+[2026-02-24 12:34:47] INICIO | CLIENTE=C:\recibir | IdCliente=1 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=Proceso_automatico
+[2026-02-24 12:34:47] CLIENTE|INICIO|Base=C:\recibir|IdCliente=1
+[2026-02-24 12:34:47] CLIENTE|ERROR|Base=C:\recibir|IdCliente=1|No esta informada la carpeta en configuracion (RutaIA_procesar). Se usa idcliente=1.
+[2026-02-24 12:34:47] TARJETAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\TARJETAS
+[2026-02-24 12:34:47] COMPRAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\COMPRAS
+[2026-02-24 12:34:47] RESULT=ERROR | Procesados=0 | Saltados=0 | NoListos=0 | Errores=1
+[2026-02-24 12:35:46] INICIO | CLIENTE=C:\recibir | IdCliente=1 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=Proceso_automatico
+[2026-02-24 12:35:46] CLIENTE|INICIO|Base=C:\recibir|IdCliente=1
+[2026-02-24 12:35:46] CLIENTE|ERROR|Base=C:\recibir|IdCliente=1|No esta informada la carpeta en configuracion (RutaIA_procesar). Se usa idcliente=1.
+[2026-02-24 12:35:46] TARJETAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\TARJETAS
+[2026-02-24 12:35:46] COMPRAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\COMPRAS
+[2026-02-24 12:35:46] RESULT=ERROR | Procesados=0 | Saltados=0 | NoListos=0 | Errores=1
+[2026-02-24 12:38:51] INICIO | CLIENTE=C:\recibir | IdCliente=1 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=Proceso_automatico
+[2026-02-24 12:38:51] CLIENTE|INICIO|Base=C:\recibir|IdCliente=1
+[2026-02-24 12:38:51] CLIENTE|ERROR|Base=C:\recibir|IdCliente=1|No esta informada la carpeta en configuracion (RutaIA_procesar). Se usa idcliente=1.
+[2026-02-24 12:38:51] TARJETAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\TARJETAS
+[2026-02-24 12:38:51] COMPRAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\COMPRAS
+[2026-02-24 12:38:51] RESULT=ERROR | Procesados=0 | Saltados=0 | NoListos=0 | Errores=1
+[2026-02-24 12:46:12] INICIO | CLIENTE=C:\recibir | IdCliente=112011013 | StableSec=120 | ReprocesarTodo=0 | PreAgruparCompras=1 | IATask=Proceso_automatico
+[2026-02-24 12:46:12] CLIENTE|INICIO|Base=C:\recibir|IdCliente=112011013
+[2026-02-24 12:46:12] TARJETAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\TARJETAS
+[2026-02-24 12:46:12] COMPRAS[recibir]|INFO|Encontrados=0|Folder=C:\recibir\COMPRAS
+[2026-02-24 12:46:12] RESULT=OK | Procesados=0 | Saltados=0 | NoListos=0 | Errores=0

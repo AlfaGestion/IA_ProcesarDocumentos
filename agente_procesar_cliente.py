@@ -19,6 +19,7 @@ Reglas:
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import json
 import os
@@ -29,6 +30,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+try:
+    import pyodbc
+except Exception:
+    pyodbc = None
+
 
 # Extensiones soportadas actualmente por ambos scripts lectores.
 SUPPORTED_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
@@ -36,6 +42,10 @@ PROC_SUBDIR_NAME = "PROC_AGENTE_IA"
 RETENTION_DAYS = 7
 FILE_STABLE_SECONDS = 120
 LOCK_STALE_HOURS = 12
+DEFAULT_AGENT_IA_TASK = "Proceso_automatico"
+DEFAULT_CONFIG_TABLE = "clientes"
+DEFAULT_CONFIG_ID_COL = "idcliente"
+DEFAULT_CONFIG_ROUTE_COL = "RutaIA_procesar"
 
 
 def _now() -> str:
@@ -107,6 +117,135 @@ def _parse_client_paths() -> List[Path]:
         unique_paths.append(Path(raw))
 
     return unique_paths
+
+
+def _normalize_base_client_path(raw_path: Path) -> Path:
+    """Si pasan ...\\TARJETAS o ...\\COMPRAS como base, sube un nivel."""
+    p = raw_path
+    tail = p.name.strip().lower()
+    if tail in {"tarjetas", "compras"} and p.parent != p:
+        return p.parent
+    return p
+
+
+def _normalize_client_base_list(paths: List[Path]) -> List[Path]:
+    unique_paths: List[Path] = []
+    seen: set[str] = set()
+    for p in paths:
+        base = _normalize_base_client_path(p)
+        key = os.path.normcase(os.path.normpath(str(base)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_paths.append(base)
+    return unique_paths
+
+
+def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        add_help=True,
+        description="Agente para procesar TARJETAS/COMPRAS por rutas de cliente.",
+    )
+    parser.add_argument(
+        "--idcliente",
+        type=int,
+        default=None,
+        help="Si se informa, busca la RutaIA_procesar en configuracion y procesa solo ese cliente.",
+    )
+    return parser.parse_args(argv)
+
+
+def _norm_path_str(value: str) -> str:
+    raw = (value or "").strip().strip('"').strip("'")
+    if not raw:
+        return ""
+    norm = os.path.normcase(os.path.normpath(raw))
+    return norm.rstrip("\\/")
+
+
+def _sql_connection_string_from_env() -> str:
+    driver = (os.getenv("SQL_DRIVER") or "").strip() or "ODBC Driver 17 for SQL Server"
+    server = (os.getenv("SQL_SERVER") or "").strip()
+    database = (os.getenv("SQL_DATABASE") or "").strip()
+    user = (os.getenv("SQL_USER") or "").strip()
+    password = (os.getenv("SQL_PASSWORD") or "").strip()
+
+    if not server or not database:
+        return ""
+
+    if user and password:
+        return (
+            f"DRIVER={{{driver}}};"
+            f"SERVER={server};DATABASE={database};UID={user};PWD={password};"
+            "TrustServerCertificate=yes;"
+        )
+
+    return (
+        f"DRIVER={{{driver}}};"
+        f"SERVER={server};DATABASE={database};Trusted_Connection=yes;"
+        "TrustServerCertificate=yes;"
+    )
+
+
+def _load_client_config() -> Tuple[Dict[str, int], Dict[int, str], Optional[str]]:
+    if pyodbc is None:
+        return {}, {}, "pyodbc no disponible."
+
+    conn_str = _sql_connection_string_from_env()
+    if not conn_str:
+        return {}, {}, "Falta configurar SQL_SERVER/SQL_DATABASE."
+
+    table_name = DEFAULT_CONFIG_TABLE
+    id_col = DEFAULT_CONFIG_ID_COL
+    route_col = DEFAULT_CONFIG_ROUTE_COL
+
+    by_route: Dict[str, int] = {}
+    by_id: Dict[int, str] = {}
+
+    try:
+        with pyodbc.connect(conn_str, timeout=10) as conn:
+            cur = conn.cursor()
+            # Resolver esquema real para tabla de clientes sin depender de .env.
+            cur.execute(
+                """
+                SELECT c.TABLE_SCHEMA, c.TABLE_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS c
+                WHERE c.COLUMN_NAME IN (?, ?)
+                GROUP BY c.TABLE_SCHEMA, c.TABLE_NAME
+                HAVING COUNT(DISTINCT c.COLUMN_NAME) = 2
+                ORDER BY CASE WHEN LOWER(c.TABLE_NAME) = ? THEN 0 ELSE 1 END, c.TABLE_SCHEMA, c.TABLE_NAME
+                """,
+                id_col,
+                route_col,
+                table_name.lower(),
+            )
+            candidates = cur.fetchall()
+            if not candidates:
+                return {}, {}, (
+                    "No se encontro tabla con columnas requeridas "
+                    f"({id_col}, {route_col}) para resolver idcliente por ruta."
+                )
+            schema_name = str(candidates[0][0]).strip()
+            resolved_table = str(candidates[0][1]).strip()
+            table_ref = f"[{schema_name}].[{resolved_table}]"
+            query = f"SELECT [{id_col}], [{route_col}] FROM {table_ref} WHERE [{route_col}] IS NOT NULL"
+            cur.execute(query)
+            for row in cur.fetchall():
+                try:
+                    rid = int(row[0])
+                except Exception:
+                    continue
+                route = str(row[1] or "").strip()
+                if not route:
+                    continue
+                norm = _norm_path_str(route)
+                if norm:
+                    by_route[norm] = rid
+                    by_id[rid] = route
+    except Exception as e:
+        return {}, {}, f"No se pudo consultar configuracion SQL: {e}"
+
+    return by_route, by_id, None
 
 
 def _safe_log_dir_name(base: Path) -> str:
@@ -190,7 +329,16 @@ def _cleanup_old_files(folder: Path, days: int = RETENTION_DAYS) -> int:
     return deleted
 
 
-def _run_reader(reader_script: Path, src_file: Path, outdir: Path) -> Tuple[bool, str]:
+def _build_reader_env(ia_task: str, idcliente: int) -> Dict[str, str]:
+    env = os.environ.copy()
+    # Auditoria backend/DB: identificar invocaciones automaticas del agente.
+    env["IA_TASK"] = ia_task
+    env["IA_IDCLIENTE"] = str(idcliente)
+    env["IDCLIENTE"] = str(idcliente)
+    return env
+
+
+def _run_reader(reader_script: Path, src_file: Path, outdir: Path, ia_task: str, idcliente: int) -> Tuple[bool, str]:
     cmd = [
         sys.executable,
         str(reader_script),
@@ -205,6 +353,7 @@ def _run_reader(reader_script: Path, src_file: Path, outdir: Path) -> Tuple[bool
         encoding="utf-8",
         errors="replace",
         cwd=str(reader_script.parent),
+        env=_build_reader_env(ia_task, idcliente),
     )
     merged = (proc.stdout or "").strip()
     if proc.stderr:
@@ -213,7 +362,9 @@ def _run_reader(reader_script: Path, src_file: Path, outdir: Path) -> Tuple[bool
     return ok, merged
 
 
-def _run_reader_many(reader_script: Path, src_files: List[Path], outdir: Path) -> Tuple[bool, str]:
+def _run_reader_many(
+    reader_script: Path, src_files: List[Path], outdir: Path, ia_task: str, idcliente: int
+) -> Tuple[bool, str]:
     cmd = [sys.executable, str(reader_script), *[str(p) for p in src_files], "--outdir", str(outdir)]
     proc = subprocess.run(
         cmd,
@@ -222,6 +373,7 @@ def _run_reader_many(reader_script: Path, src_files: List[Path], outdir: Path) -
         encoding="utf-8",
         errors="replace",
         cwd=str(reader_script.parent),
+        env=_build_reader_env(ia_task, idcliente),
     )
     merged = (proc.stdout or "").strip()
     if proc.stderr:
@@ -297,6 +449,8 @@ def _process_folder(
     stable_seconds: int,
     force_reprocess: bool,
     pregroup_compras: bool,
+    ia_task: str,
+    idcliente: int,
 ) -> Tuple[int, int, int, int, List[str]]:
     processed = 0
     skipped = 0
@@ -354,13 +508,13 @@ def _process_folder(
             src_file = group[0]
             log_path = proc_dir / f"{src_file.name}.log"
             print(f"[{_now()}] {label}: PROCESANDO {src_file.name}")
-            ok, output = _run_reader(reader_script, src_file, proc_dir)
+            ok, output = _run_reader(reader_script, src_file, proc_dir, ia_task, idcliente)
             processed += 1
             group_desc = src_file.name
         else:
             names = " | ".join(p.name for p in group)
             print(f"[{_now()}] {label}: PROCESANDO GRUPO ({len(group)}): {names}")
-            ok, output = _run_reader_many(reader_script, group, proc_dir)
+            ok, output = _run_reader_many(reader_script, group, proc_dir, ia_task, idcliente)
             processed += len(group)
             group_desc = names
 
@@ -409,7 +563,8 @@ def _process_folder(
     return processed, skipped, errors, not_ready, events
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
+    args = _parse_args(argv)
     project_dir = _runtime_base_dir()
     day_stamp = dt.datetime.now().strftime("%Y%m%d")
     log_root = project_dir / "LOG"
@@ -421,6 +576,8 @@ def main() -> int:
     lock_stale_hours = int(os.getenv("LOCK_STALE_HORAS", str(LOCK_STALE_HOURS)) or LOCK_STALE_HOURS)
     force_reprocess = os.getenv("REPROCESAR_TODO", "0").strip().lower() in {"1", "true", "yes", "si", "y"}
     pregroup_compras = os.getenv("PREAGRUPAR_COMPRAS", "1").strip().lower() in {"1", "true", "yes", "si", "y"}
+    agent_ia_task = (os.getenv("AGENTE_IA_TASK", DEFAULT_AGENT_IA_TASK) or "").strip() or DEFAULT_AGENT_IA_TASK
+    route_to_id, id_to_route, config_error = _load_client_config()
 
     if _lock_is_stale(lock_path, lock_stale_hours):
         try:
@@ -435,12 +592,31 @@ def main() -> int:
         return 0
 
     try:
-        client_bases = _parse_client_paths()
-        if not client_bases:
-            print("ERROR: falta variable de entorno RUTA_CLIENTE o RUTAS_CLIENTE.")
-            print(r"Definila en .env (RUTA_CLIENTE=... o RUTAS_CLIENTE=ruta1;ruta2) o en entorno de PowerShell.")
-            _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=Faltan rutas de cliente")
-            return 2
+        if args.idcliente is not None:
+            if config_error:
+                print(f"ERROR: no se puede consultar configuracion para --idcliente. Detalle: {config_error}")
+                _append_text(
+                    agent_log_path,
+                    f"[{run_start}] RESULT=ERROR | Motivo=Fallo configuracion SQL para --idcliente | Detalle={config_error}",
+                )
+                return 2
+            route = id_to_route.get(int(args.idcliente))
+            if not route:
+                print(f"INFO: idcliente={args.idcliente} no tiene RutaIA_procesar informada. No se procesa.")
+                _append_text(
+                    agent_log_path,
+                    f"[{run_start}] RESULT=SKIP | Motivo=idcliente={args.idcliente} sin RutaIA_procesar en configuracion",
+                )
+                return 0
+            client_bases = _normalize_client_base_list([Path(route)])
+        else:
+            client_bases = _parse_client_paths()
+            if not client_bases:
+                print("ERROR: falta variable de entorno RUTA_CLIENTE o RUTAS_CLIENTE.")
+                print(r"Definila en .env (RUTA_CLIENTE=... o RUTAS_CLIENTE=ruta1;ruta2) o en entorno de PowerShell.")
+                _append_text(agent_log_path, f"[{run_start}] RESULT=ERROR | Motivo=Faltan rutas de cliente")
+                return 2
+            client_bases = _normalize_client_base_list(client_bases)
 
         reader_tarjetas = project_dir / "lector_liquidaciones_to_json_v1.py"
         reader_compras = project_dir / "lector_facturas_to_json_v5.py"
@@ -460,18 +636,34 @@ def main() -> int:
         total_not_ready = 0
 
         global_events: List[str] = []
+        if config_error:
+            print(f"[{_now()}] WARN: no se pudo leer configuracion SQL ({config_error})")
+            global_events.append(f"[{_now()}] CONFIG|WARN|{config_error}")
 
         for base in client_bases:
+            norm_base = _norm_path_str(str(base))
+            if args.idcliente is not None:
+                resolved_idcliente = int(args.idcliente)
+                ruta_no_informada = False
+            else:
+                resolved_idcliente = route_to_id.get(norm_base, 1)
+                ruta_no_informada = resolved_idcliente == 1 and norm_base not in route_to_id
             tarjetas_dir = base / "TARJETAS"
             compras_dir = base / "COMPRAS"
             client_log_path = log_root / _safe_log_dir_name(base) / f"agente_{day_stamp}.log"
-            client_events: List[str] = [f"[{_now()}] CLIENTE|INICIO|Base={base}"]
+            client_events: List[str] = [f"[{_now()}] CLIENTE|INICIO|Base={base}|IdCliente={resolved_idcliente}"]
             client_processed = 0
             client_skipped = 0
             client_errors = 0
             client_not_ready = 0
 
-            print(f"\n[{_now()}] CLIENTE: {base}")
+            print(f"\n[{_now()}] CLIENTE: {base} | idcliente={resolved_idcliente}")
+            if ruta_no_informada:
+                msg = "No esta informada la carpeta en configuracion (RutaIA_procesar). Se usa idcliente=1."
+                print(f"[{_now()}] WARN: {msg}")
+                client_events.append(f"[{_now()}] CLIENTE|ERROR|Base={base}|IdCliente=1|{msg}")
+                client_errors += 1
+                total_errors += 1
 
             p, s, e, nr, ev = _process_folder(
                 tarjetas_dir,
@@ -480,6 +672,8 @@ def main() -> int:
                 stable_seconds,
                 force_reprocess,
                 False,
+                agent_ia_task,
+                resolved_idcliente,
             )
             client_processed += p
             client_skipped += s
@@ -498,6 +692,8 @@ def main() -> int:
                 stable_seconds,
                 force_reprocess,
                 pregroup_compras,
+                agent_ia_task,
+                resolved_idcliente,
             )
             client_processed += p
             client_skipped += s
@@ -511,14 +707,14 @@ def main() -> int:
 
             client_result = "OK" if client_errors == 0 else "ERROR"
             client_lines = [
-                f"[{run_start}] INICIO | CLIENTE={base} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)} | PreAgruparCompras={int(pregroup_compras)}",
+                f"[{run_start}] INICIO | CLIENTE={base} | IdCliente={resolved_idcliente} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)} | PreAgruparCompras={int(pregroup_compras)} | IATask={agent_ia_task}",
                 *client_events,
                 f"[{_now()}] RESULT={client_result} | Procesados={client_processed} | Saltados={client_skipped} | NoListos={client_not_ready} | Errores={client_errors}",
                 "",
             ]
             _append_text(client_log_path, "\n".join(client_lines))
             global_events.append(
-                f"[{_now()}] CLIENTE|RESULT|Base={base}|Procesados={client_processed}|Saltados={client_skipped}|NoListos={client_not_ready}|Errores={client_errors}"
+                f"[{_now()}] CLIENTE|RESULT|Base={base}|IdCliente={resolved_idcliente}|Procesados={client_processed}|Saltados={client_skipped}|NoListos={client_not_ready}|Errores={client_errors}"
             )
 
         print("\n=== RESUMEN ===")
@@ -534,7 +730,7 @@ def main() -> int:
         result = "OK" if total_errors == 0 else "ERROR"
         rutas_str = ";".join(str(p) for p in client_bases)
         log_lines = [
-            f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)} | PreAgruparCompras={int(pregroup_compras)}",
+            f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)} | PreAgruparCompras={int(pregroup_compras)} | IATask={agent_ia_task}",
             *global_events,
             f"[{run_end}] RESULT={result} | Procesados={total_processed} | Saltados={total_skipped} | NoListos={total_not_ready} | Errores={total_errors}",
             "",
