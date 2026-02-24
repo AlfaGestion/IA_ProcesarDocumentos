@@ -1,6 +1,0 @@
-[2026-02-20 09:32:33] INICIO | RUTAS_CLIENTE=H:\Mi unidad\CLIENTES\OLIVA | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1
-[2026-02-20 09:37:22] CLIENTE|RESULT|Base=H:\Mi unidad\CLIENTES\OLIVA|Procesados=3|Saltados=0|NoListos=0|Errores=0
-[2026-02-20 09:37:22] RESULT=OK | Procesados=3 | Saltados=0 | NoListos=0 | Errores=0
-[2026-02-20 11:35:42] INICIO | RUTAS_CLIENTE=H:\Mi unidad\CLIENTES\OLIVA | StableSec=120 | ReprocesarTodo=1 | PreAgruparCompras=1
-[2026-02-20 11:41:00] CLIENTE|RESULT|Base=H:\Mi unidad\CLIENTES\OLIVA|Procesados=6|Saltados=0|NoListos=0|Errores=0
-[2026-02-20 11:41:00] RESULT=OK | Procesados=6 | Saltados=0 | NoListos=0 | Errores=0
