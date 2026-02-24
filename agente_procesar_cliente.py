@@ -42,7 +42,7 @@ PROC_SUBDIR_NAME = "PROC_AGENTE_IA"
 RETENTION_DAYS = 7
 FILE_STABLE_SECONDS = 120
 LOCK_STALE_HOURS = 12
-DEFAULT_AGENT_IA_TASK = "Proceso_automatico"
+DEFAULT_AGENT_IA_TASK = "PROCESO_AUTOMATICO"
 DEFAULT_CONFIG_TABLE = "clientes"
 DEFAULT_CONFIG_ID_COL = "idcliente"
 DEFAULT_CONFIG_ROUTE_COL = "RutaIA_procesar"
@@ -338,6 +338,18 @@ def _build_reader_env(ia_task: str, idcliente: int) -> Dict[str, str]:
     return env
 
 
+def _resolve_folder_task(base_task: str, folder_kind: str) -> str:
+    """Task de auditoria por carpeta cuando corre el agente en modo automatico."""
+    task = (base_task or "").strip().upper()
+    kind = (folder_kind or "").strip().lower()
+    if task == DEFAULT_AGENT_IA_TASK:
+        if kind == "tarjetas":
+            return "AUTOMATICO_LIQUIDACION"
+        if kind == "compras":
+            return "AUTOMATICO_FACTURA"
+    return (base_task or "").strip().upper()
+
+
 def _run_reader(reader_script: Path, src_file: Path, outdir: Path, ia_task: str, idcliente: int) -> Tuple[bool, str]:
     cmd = [
         sys.executable,
@@ -576,7 +588,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     lock_stale_hours = int(os.getenv("LOCK_STALE_HORAS", str(LOCK_STALE_HOURS)) or LOCK_STALE_HOURS)
     force_reprocess = os.getenv("REPROCESAR_TODO", "0").strip().lower() in {"1", "true", "yes", "si", "y"}
     pregroup_compras = os.getenv("PREAGRUPAR_COMPRAS", "1").strip().lower() in {"1", "true", "yes", "si", "y"}
-    agent_ia_task = (os.getenv("AGENTE_IA_TASK", DEFAULT_AGENT_IA_TASK) or "").strip() or DEFAULT_AGENT_IA_TASK
+    raw_agent_ia_task = (os.getenv("AGENTE_IA_TASK", DEFAULT_AGENT_IA_TASK) or "").strip().upper()
+    if not raw_agent_ia_task:
+        agent_ia_task = DEFAULT_AGENT_IA_TASK
+    elif raw_agent_ia_task == DEFAULT_AGENT_IA_TASK:
+        agent_ia_task = DEFAULT_AGENT_IA_TASK
+    else:
+        agent_ia_task = raw_agent_ia_task
     route_to_id, id_to_route, config_error = _load_client_config()
 
     if _lock_is_stale(lock_path, lock_stale_hours):
@@ -665,6 +683,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 client_errors += 1
                 total_errors += 1
 
+            tarjetas_task = _resolve_folder_task(agent_ia_task, "tarjetas")
+            compras_task = _resolve_folder_task(agent_ia_task, "compras")
+
             p, s, e, nr, ev = _process_folder(
                 tarjetas_dir,
                 reader_tarjetas,
@@ -672,7 +693,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 stable_seconds,
                 force_reprocess,
                 False,
-                agent_ia_task,
+                tarjetas_task,
                 resolved_idcliente,
             )
             client_processed += p
@@ -692,7 +713,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 stable_seconds,
                 force_reprocess,
                 pregroup_compras,
-                agent_ia_task,
+                compras_task,
                 resolved_idcliente,
             )
             client_processed += p
@@ -707,7 +728,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
             client_result = "OK" if client_errors == 0 else "ERROR"
             client_lines = [
-                f"[{run_start}] INICIO | CLIENTE={base} | IdCliente={resolved_idcliente} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)} | PreAgruparCompras={int(pregroup_compras)} | IATask={agent_ia_task}",
+                f"[{run_start}] INICIO | CLIENTE={base} | IdCliente={resolved_idcliente} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)} | PreAgruparCompras={int(pregroup_compras)} | IATaskTarjetas={tarjetas_task} | IATaskCompras={compras_task}",
                 *client_events,
                 f"[{_now()}] RESULT={client_result} | Procesados={client_processed} | Saltados={client_skipped} | NoListos={client_not_ready} | Errores={client_errors}",
                 "",
@@ -730,7 +751,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         result = "OK" if total_errors == 0 else "ERROR"
         rutas_str = ";".join(str(p) for p in client_bases)
         log_lines = [
-            f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)} | PreAgruparCompras={int(pregroup_compras)} | IATask={agent_ia_task}",
+            f"[{run_start}] INICIO | RUTAS_CLIENTE={rutas_str} | StableSec={stable_seconds} | ReprocesarTodo={int(force_reprocess)} | PreAgruparCompras={int(pregroup_compras)} | IATaskBase={agent_ia_task}",
             *global_events,
             f"[{run_end}] RESULT={result} | Procesados={total_processed} | Saltados={total_skipped} | NoListos={total_not_ready} | Errores={total_errors}",
             "",
@@ -742,4 +763,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("\nProceso cancelado por usuario.")
+        raise SystemExit(130)

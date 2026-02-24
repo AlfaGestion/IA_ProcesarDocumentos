@@ -1085,12 +1085,13 @@ def main() -> None:
 
             status("Analizando con Inteligencia Artificial...")
             log("Motor IA: Activo")
-            def call_model(content_blocks: List[Dict[str, Any]], model_name: str) -> dict:
+            def call_model(content_blocks: List[Dict[str, Any]], model_name: str, source_file: str) -> dict:
                 out_text = call_backend(
                     content_blocks=content_blocks,
                     model=model_name,
                     max_output_tokens=16000,
                     text={"format": {"type": "json_object"}},
+                    source_filename=Path(source_file).name,
                 )
 
                 try:
@@ -1123,10 +1124,10 @@ def main() -> None:
                         log(f"Archivo: {f}")
                         page_content = [{"type": "input_text", "text": prompt}]
                         page_content.extend(file_to_content_blocks(f, args.tile))
-                        page_results.append(call_model(page_content, model_name))
+                        page_results.append(call_model(page_content, model_name, f))
                     data_model = merge_data_keep_best(page_results)
                 else:
-                    data_model = call_model(content, model_name)
+                    data_model = call_model(content, model_name, args.files[0])
 
                 data_model["ROWS"] = dedupe_rows(_ensure_list(data_model.get("ROWS")))
                 adjust_importe_lista_for_bultos(data_model)

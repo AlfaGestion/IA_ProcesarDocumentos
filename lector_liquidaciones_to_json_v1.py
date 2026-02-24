@@ -1677,10 +1677,10 @@ def main() -> None:
             if args.idcliente is not None:
                 os.environ["IA_IDCLIENTE"] = str(args.idcliente)
                 os.environ["IDCLIENTE"] = str(args.idcliente)
-            # Etiqueta de auditoria por defecto para backend/IA_ConsultasGPT
-            # (el agente puede sobreescribirla via entorno).
+            # Etiqueta de auditoria para backend/IA_ConsultasGPT.
+            # Si el agente define IA_TASK (p.ej. automatico_liquidacion), se respeta.
             if not (os.getenv("IA_TASK") or "").strip():
-                os.environ["IA_TASK"] = "liquidicacion"
+                os.environ["IA_TASK"] = "LIQUIDACION"
 
             if not backend_enabled():
                 raise SystemExit(
@@ -1770,11 +1770,12 @@ def main() -> None:
 
             status("Analizando con Inteligencia Artificial...")
             log("Motor IA: Activo")
-            def call_model(content_blocks: List[Dict[str, Any]]) -> str:
+            def call_model(content_blocks: List[Dict[str, Any]], source_file: str) -> str:
                 out_text = call_backend(
                     content_blocks=content_blocks,
                     model=args.model,
                     max_output_tokens=4000,
+                    source_filename=Path(source_file).name,
                 )
 
                 if not out_text.strip():
@@ -1812,7 +1813,7 @@ def main() -> None:
                     log(f"Unidad {i}/{total_units}: {src}")
                     unit_content = [{"type": "input_text", "text": prompt}]
                     unit_content.extend(blocks)
-                    page_results.append(call_model(unit_content))
+                    page_results.append(call_model(unit_content, src))
                 return "\n".join([t for t in page_results if t.strip()])
 
             units = build_units(force_pdf_page_split=False)
@@ -1821,7 +1822,7 @@ def main() -> None:
                 data = run_units(units, "IA por página/bloque")
             else:
                 try:
-                    data = call_model(content)
+                    data = call_model(content, args.files[0])
                 except Exception as e:
                     if not _is_request_too_large_error(e):
                         raise
