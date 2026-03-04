@@ -1,0 +1,129 @@
+{
+  "version": 1,
+  "default_policy": "exclude",
+  "banks": {
+    "BNA": {
+      "bank_name": "BANCO DE LA NACION ARGENTINA",
+      "detect": {
+        "sheet_name_contains": [
+          "HOJA1 - TABLE",
+          "HOJA1"
+        ],
+        "headers_any": [
+          "Fecha",
+          "Comprobante",
+          "Concepto",
+          "Importe"
+        ]
+      },
+      "columns": {
+        "date": "Fecha",
+        "description": "Concepto",
+        "amount": "Importe"
+      },
+      "rules": [
+        {
+          "match": "GRAVAMEN LEY 25413|IMP\\.DB/CR",
+          "mode": "regex",
+          "category": "GASTO"
+        },
+        {
+          "match": "GRAVAMEN IBRN|IMPUESTO RIONEGRINO|ING\\.? ?BRUT|SIRCREB|RET\\.?IIBB",
+          "mode": "regex",
+          "category": "RET_IIBB"
+        },
+        {
+          "match": "COMISION|COMIS|INTERES|INTERESES|ARANCEL|GASTO BANC",
+          "mode": "regex",
+          "category": "GASTO"
+        },
+        {
+          "match": "RETEN IVA|RET\\.IVA|RG ?2408",
+          "mode": "regex",
+          "category": "RET_IVA"
+        },
+        {
+          "match": "IVA BASE|IVA ALICUOTA|IVA ",
+          "mode": "regex",
+          "category": "IVA_CREDITO"
+        },
+        {
+          "match": "RETENCION GANAN|RET\\.?GAN",
+          "mode": "regex",
+          "category": "RET_GAN"
+        }
+      ],
+      "exclusions": [
+        "TRANSFER",
+        "DEBIN",
+        "DEPOSITO",
+        "PAGO DIRECTO",
+        "TODOCARD",
+        "MASTERCARD",
+        "VISA",
+        "CREDITO POR TRANSFERENCIA"
+      ]
+    },
+    "BPAT": {
+      "bank_name": "BANCO PATAGONIA S.A.",
+      "detect": {
+        "sheet_name_contains": [
+          "VERTVERT"
+        ],
+        "headers_any": [
+          "Fecha",
+          "Descripción",
+          "Débito",
+          "Crédito"
+        ]
+      },
+      "columns": {
+        "date": "Fecha",
+        "description": "Descripción",
+        "debit": "Débito",
+        "credit": "Crédito"
+      },
+      "rules": [
+        {
+          "match": "GRAVAMEN LEY 25413|IMP\\.DB/CR",
+          "mode": "regex",
+          "category": "GASTO"
+        },
+        {
+          "match": "GRAVAMEN IBRN|IMPUESTO RIONEGRINO|ING\\.? ?BRUT|SIRCREB|RET\\.?IIBB",
+          "mode": "regex",
+          "category": "RET_IIBB"
+        },
+        {
+          "match": "COMISION|COMIS|INTERES|INTERESES|ARANCEL|GASTO BANC",
+          "mode": "regex",
+          "category": "GASTO"
+        },
+        {
+          "match": "RETEN IVA|RET\\.IVA|RG ?2408",
+          "mode": "regex",
+          "category": "RET_IVA"
+        },
+        {
+          "match": "IVA BASE|IVA ALICUOTA|IVA ",
+          "mode": "regex",
+          "category": "IVA_CREDITO"
+        },
+        {
+          "match": "RETENCION GANAN|RET\\.?GAN",
+          "mode": "regex",
+          "category": "RET_GAN"
+        }
+      ],
+      "exclusions": [
+        "TRANSFER",
+        "PAGO CON TRANSFERENCIA",
+        "PAGOS AFIP",
+        "DEPOSITO",
+        "TODOCARD",
+        "TARJETA CREDITO",
+        "DEBITO P/ACREDITAC.DE SUELDOS"
+      ]
+    }
+  }
+}
