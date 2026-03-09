@@ -1,12 +1,29 @@
-# IA_ProcesarDocumentos
+﻿# IA_ProcesarDocumentos
 
-Scripts para leer documentos (im�genes o PDF) y devolver JSON normalizado usando OpenAI.
+Procesamiento de documentos (PDF e imagenes) con salida estructurada para integracion con VB6/automatizaciones.
+
+Este workspace funciona en modo cliente: los lectores llaman a un backend remoto con autenticacion HMAC. La clave `OPENAI_API_KEY` no se configura en este equipo.
+
+## Componentes
+
+- `lector_facturas_to_json_v5.py`: procesa facturas y genera `.json`.
+- `lector_liquidaciones_to_json_v1.py`: procesa liquidaciones de tarjeta y genera `.txt`.
+- `lector_gastos_bancarios_xls_v1.py`: procesa extractos `.xls/.xlsx` y genera `.txt` + archivos de control.
+- `agente_procesar_cliente.py`: recorre carpetas de clientes (`TARJETAS` y `COMPRAS`) y ejecuta los lectores automaticamente.
+- `ia_backend_transport.py`: transporte al backend remoto (`IA_BACKEND_URL` + firma HMAC).
 
 ## Requisitos
-- Python 3.10+ (recomendado 3.11)
-- Credenciales de backend remoto (`IA_BACKEND_URL`, `IA_CLIENT_ID`, `IA_CLIENT_SECRET`)
 
-## Instalaci�n
+- Python 3.10+ (recomendado: 3.11).
+- Windows (uso principal).
+- Credenciales de backend remoto:
+  - `IA_BACKEND_URL`
+  - `IA_BACKEND_ROUTE` (default: `/v1/process`)
+  - `IA_CLIENT_ID`
+  - `IA_CLIENT_SECRET`
+
+## Instalacion
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -14,161 +31,149 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## Variables de entorno (cliente)
-Crear un archivo `.env` en la carpeta del proyecto con:
-```
-IA_BACKEND_URL=http://tu-servidor:8787
-IA_BACKEND_ROUTE=/v1/process
-IA_CLIENT_ID=cliente_oliva
-IA_CLIENT_SECRET=secreto_largo_unico
-IA_TASK=facturas
-```
+Dependencias actuales (`requirements.txt`): `openai`, `python-dotenv`, `pillow`, `pypdf`.
 
-`OPENAI_API_KEY` no se configura en este workspace del cliente.
+## Configuracion (`.env`)
 
-## Modo backend remoto (recomendado para instalar en PCs de clientes)
-En cliente no se expone `OPENAI_API_KEY`. Los lectores (`v5` y `v1`) usan solo backend remoto:
-```
-IA_BACKEND_URL=http://tu-servidor:8787
-IA_BACKEND_ROUTE=/v1/process
-IA_CLIENT_ID=cliente_oliva
-IA_CLIENT_SECRET=secreto_largo_unico
-IA_TASK=facturas
-```
+Podes usar `.env.example` como base.
 
-El script usa firma HMAC (`timestamp + nonce + body`) y no permite `OPENAI_API_KEY` local en cliente.
-
-### Backend proxy (ubicado en wsAlfa)
-El backend ahora vive en: `e:\Dev\wsAlfa\ia_backend\ia_backend_proxy_server.py`
-
-Variables de entorno backend (en `e:\Dev\wsAlfa\.env`):
 ```env
-OPENAI_API_KEY=tu_api_key_openai_servidor
-IA_CLIENTS_JSON={"cliente_oliva":"secreto_largo_unico","cliente_demo":"otro_secreto"}
-IA_BACKEND_HOST=0.0.0.0
-IA_BACKEND_PORT=8787
-IA_MAX_SKEW_SECONDS=300
+IA_BACKEND_URL=http://tu-servidor:8787
+IA_BACKEND_ROUTE=/v1/process
+IA_CLIENT_ID=cliente_oliva
+IA_CLIENT_SECRET=secreto_largo_unico
+IA_TASK=facturas
+
+# Si usas agente automatico:
+AGENTE_IA_TASK=PROCESO_AUTOMATICO
+RUTA_CLIENTE=H:\Mi unidad\CLIENTES\PRUEBAS
+# o varias rutas:
+RUTAS_CLIENTE=H:\Mi unidad\CLIENTES\PRUEBAS;H:\Mi unidad\CLIENTES\OTRO
 ```
 
-Ejecutar backend:
+Notas:
+- `OPENAI_API_KEY` va en el servidor backend, no en este repo cliente.
+- Todos los scripts aceptan overrides por CLI (`--backend-url`, `--client-id`, etc.).
+
+## Uso rapido
+
+### 1) Facturas -> JSON
+
 ```powershell
-cd e:\Dev\wsAlfa
-python .\ia_backend\ia_backend_proxy_server.py
+python .\lector_facturas_to_json_v5.py factura.pdf --outdir E:\temp
 ```
 
-## Uso b�sico (facturas)
-```powershell
-python .\lector_facturas_to_json_v5.py FACT_3hojasEn1.pdf --outdir E:\app\IA_ProcesarDocumentos\
-```
+Opciones importantes:
+- `--model` (default: `gpt-4.1-mini`)
+- `--fallback-model` (default: `gpt-4.1`)
+- `--no-fallback`
+- `--per-page`
+- `--auto` (ajusta `tile` y `per-page` segun paginas)
+- `--tile N` (1..6, solo imagenes)
 
-## Varias p�ginas (im�genes)
-```powershell
-python .\lector_facturas_to_json_v5.py fac1.jpg fac2.jpg --outdir E:\temp
-```
+Limites:
+- 1 a 5 archivos por ejecucion.
 
-## Prompt personalizado
-```powershell
-python .\lector_facturas_to_json_v5.py fac1.jpg fac2.jpg --prompt-file E:\DocProcesar\Prompt_211010026.txt --outdir E:\DocProcesar
-```
+Salida:
+- `<nombre_original>.json` en `--outdir` (o carpeta temporal si no se indica).
 
-## GUI (ventana de progreso)
-```powershell
-python .\lector_facturas_to_json_v5.py fac1.jpg --outdir E:\temp --gui
-```
+### 2) Liquidaciones -> TXT
 
-## Modo por p�gina (mejora tablas largas)
-```powershell
-python .\lector_facturas_to_json_v5.py fac1.jpg fac2.jpg --outdir E:\temp --per-page
-```
-
-## Auto-ajuste (tile + per-page)
-Auto-ajusta par�metros seg�n cantidad de p�ginas:
-- 1 p�gina: `tile=3`, `per-page` OFF
-- 2-3 p�ginas: `tile=4`, `per-page` ON
-- 4+ p�ginas: `tile=5`, `per-page` ON
-```powershell
-python .\lector_facturas_to_json_v5.py fac1.jpg fac2.jpg --outdir E:\temp --auto
-```
-
-## Tileado por franjas (mejor OCR en tablas largas)
-Requiere Pillow. Divide cada imagen en N franjas horizontales y unifica los resultados.
-```powershell
-python .\lector_facturas_to_json_v5.py fac1.jpg fac2.jpg --outdir E:\temp --per-page --tile 3
-```
-
-## Modelo
-```powershell
-python .\lector_facturas_to_json_v5.py fac1.jpg --model gpt-4.1 --outdir E:\temp
-```
-****************************************************************************************************
-Para liquidaciones, el modelo por defecto es `gpt-4.1`. Pod�s cambiarlo con `--model`.
-****************************************************************************************************
-## Uso b�sico (liquidaciones de tarjetas)
-Genera un archivo de texto con encabezado y luego dos columnas: `CONCEPTO|IMPORTE`.
 ```powershell
 python .\lector_liquidaciones_to_json_v1.py liquidacion.pdf --outdir E:\temp
 ```
 
-## Varias p�ginas (liquidaciones)
+Opciones importantes:
+- `--model` (default: `gpt-4o-mini`)
+- `--per-page`
+- `--auto`
+- `--tile N` (1..6)
+- `--pdf-chunk-pages N` (0 = no dividir PDF)
+
+Limites:
+- hasta 100 archivos de entrada.
+
+Salida:
+- `<nombre_original>.txt`
+- `<nombre_original>.log`
+
+### 3) Gastos bancarios XLS/XLSX -> TXT
+
 ```powershell
-python .\lector_liquidaciones_to_json_v1.py img1.jpg img2.jpg --outdir E:\temp
+python .\lector_gastos_bancarios_xls_v1.py extracto.xlsx --outdir E:\temp
 ```
 
-## Prompt personalizado (liquidaciones)
+Opciones importantes:
+- `--rules-file` (default: `reglas_gastos_bancarios_v1.json`)
+- `--model` (auditoria backend, default: `gpt-4o-mini`)
+- `--no-api-audit`
+- `--api-audit-strict`
+- `--max-seconds` (default: 120)
+
+Salida:
+- `<nombre_original>.txt`
+- `<nombre_original>.log`
+- `<nombre_original>_control_conceptos.txt`
+
+### 4) Agente automatico por carpetas
+
 ```powershell
-python .\lector_liquidaciones_to_json_v1.py liquidacion.pdf --prompt-file E:\DocProcesar\Prompt_Liq.txt --outdir E:\DocProcesar
+python .\agente_procesar_cliente.py
 ```
 
-## GUI (liquidaciones)
-```powershell
-python .\lector_liquidaciones_to_json_v1.py liquidacion.pdf --outdir E:\temp --gui
+Flujo:
+- Toma rutas desde `RUTA_CLIENTE`/`RUTAS_CLIENTE`.
+- Procesa:
+  - `<RUTA>\TARJETAS` con `lector_liquidaciones_to_json_v1.py`
+  - `<RUTA>\COMPRAS` con `lector_facturas_to_json_v5.py`
+- Escribe resultados en `PROC_AGENTE_IA` dentro de cada carpeta.
+- Usa logs para marcar archivos procesados (`<archivo>.log`).
+- Reintenta archivos con estado previo `ERROR`.
+
+Opciones:
+- `--idcliente`: procesa solo el cliente de `RutaIA_procesar` (SQL).
+- `--ia-task`: override de `AGENTE_IA_TASK`.
+
+Variables relacionadas del agente:
+- `ARCHIVO_ESTABLE_SEGUNDOS` (default: 120)
+- `LOCK_STALE_HORAS` (default: 12)
+- `REPROCESAR_TODO` (0/1)
+- `PREAGRUPAR_COMPRAS` (0/1, default activo)
+
+## Overrides comunes por CLI
+
+Todos los scripts principales aceptan:
+
+```text
+--env-file
+--no-local-env
+--backend-url
+--backend-route
+--client-id
+--client-secret
+--ia-task
+--idcliente
 ```
-
-## Modo por p�gina (liquidaciones)
-```powershell
-python .\lector_liquidaciones_to_json_v1.py img1.jpg img2.jpg --outdir E:\temp --per-page
-```
-
-## Auto-ajuste (liquidaciones)
-```powershell
-python .\lector_liquidaciones_to_json_v1.py img1.jpg img2.jpg --outdir E:\temp --auto
-```
-
-## Notas
-- `--tile` solo aplica a im�genes (JPG/PNG/WEBP). Para PDF se ignora.
-- M�ximo 5 archivos por ejecuci�n.
-- Para liquidaciones, la salida es `.txt` con este formato:
-  - L�nea 1: nombre del banco
-  - L�nea 2: nombre de la tarjeta
-  - L�nea 3: per�odo (mes/a�o)
-  - L�nea 4: concepto (m�x. 50 caracteres)
-  - L�nea 5: `CONCEPTO|IMPORTE`
-  - L�neas siguientes: conceptos e importes
-- Para Banco Naci�n, adem�s se genera un control diario en `*_control_diarios.xls` (tabulado).
-- Se valida integridad b�sica: suma de `ROWS.Total` vs `TOTALES.Neto gravado` (o `TOTALES.Total`). Si el desv�o supera 3%, se agrega una advertencia en `meta.observaciones`.
-- Si en el texto aparece "Cantidad de items: N" y se detectan menos filas, se agrega una advertencia en `meta.observaciones`.
-
-## Troubleshooting
-### Error: backend no configurado (`IA_BACKEND_URL`)
-Activ� el entorno y reinstal� dependencias:
-```powershell
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-```
-
-### Error PyInstaller en Server 2012: `Failed to load Python DLL ... python311.dll`
-Server 2012 no soporta Python 3.11. Rebuild con Python 3.10 x64 y us� `--onedir`.
-
 
 ## Empaquetado (opcional)
-Con PyInstaller:
+
 ```powershell
 pyinstaller --onefile --noconsole lector_facturas_to_json_v5.py
 pyinstaller --onefile --noconsole lector_liquidaciones_to_json_v1.py
+pyinstaller --onefile --noconsole lector_gastos_bancarios_xls_v1.py
+pyinstaller --onefile --noconsole agente_procesar_cliente.py
 ```
 
- 
+## Troubleshooting
 
+- Error `No esta configurado IA_BACKEND_URL`:
+  - revisar `.env` y credenciales (`IA_BACKEND_URL`, `IA_CLIENT_ID`, `IA_CLIENT_SECRET`).
 
+- Error de escritura en salida:
+  - usar `--outdir` a una carpeta local con permisos.
 
+- En `--tile`, error de Pillow:
+  - instalar dependencias (`pip install -r requirements.txt`).
 
+- Server 2012 + PyInstaller + Python 3.11 (`python311.dll`):
+  - reconstruir con Python 3.10 x64.

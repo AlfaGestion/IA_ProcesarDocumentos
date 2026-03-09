@@ -25,7 +25,7 @@
         {
           "match": "GRAVAMEN LEY 25413|IMP\\.DB/CR",
           "mode": "regex",
-          "category": "GASTO"
+          "category": "IDC_A_COMPUTAR"
         },
         {
           "match": "GRAVAMEN IBRN|IMPUESTO RIONEGRINO|ING\\.? ?BRUT|SIRCREB|RET\\.?IIBB",
@@ -33,12 +33,12 @@
           "category": "RET_IIBB"
         },
         {
-          "match": "COMISION|COMIS|INTERES|INTERESES|ARANCEL|GASTO BANC",
+          "match": "COMISION|COMIS|^COM\\b|INTERES|INTERESES|ARANCEL|GASTO BANC",
           "mode": "regex",
           "category": "GASTO"
         },
         {
-          "match": "RETEN IVA|RET\\.IVA|RG ?2408",
+          "match": "IVA PERCEPCION|PERCEPCION IVA|RETEN IVA|RET\\.IVA|RG ?2408",
           "mode": "regex",
           "category": "RET_IVA"
         },
@@ -87,7 +87,7 @@
         {
           "match": "GRAVAMEN LEY 25413|IMP\\.DB/CR",
           "mode": "regex",
-          "category": "GASTO"
+          "category": "IDC_A_COMPUTAR"
         },
         {
           "match": "GRAVAMEN IBRN|IMPUESTO RIONEGRINO|ING\\.? ?BRUT|SIRCREB|RET\\.?IIBB",
@@ -95,12 +95,12 @@
           "category": "RET_IIBB"
         },
         {
-          "match": "COMISION|COMIS|INTERES|INTERESES|ARANCEL|GASTO BANC",
+          "match": "COMISION|COMIS|^COM\\b|INTERES|INTERESES|ARANCEL|GASTO BANC",
           "mode": "regex",
           "category": "GASTO"
         },
         {
-          "match": "RETEN IVA|RET\\.IVA|RG ?2408",
+          "match": "IVA PERCEPCION|PERCEPCION IVA|RETEN IVA|RET\\.IVA|RG ?2408",
           "mode": "regex",
           "category": "RET_IVA"
         },
