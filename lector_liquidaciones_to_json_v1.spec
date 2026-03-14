@@ -1,12 +1,15 @@
-# -*- mode: python ; coding: utf-8 -*-
+﻿# -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
+pypdf_hiddenimports = collect_submodules('pypdf')
+pypdf_datas = collect_data_files('pypdf')
 
 a = Analysis(
     ['lector_liquidaciones_to_json_v1.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=pypdf_datas,
+    hiddenimports=pypdf_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -36,3 +39,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+

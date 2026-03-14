@@ -557,8 +557,14 @@ def _extract_pdf_totals(files: List[str]) -> Dict[str, float]:
         "daily_rows": [],
     }
 
+    global PdfReader, PdfWriter
     if PdfReader is None:
-        return totals
+        try:
+            from pypdf import PdfReader as _PdfReader, PdfWriter as _PdfWriter
+            PdfReader = _PdfReader
+            PdfWriter = _PdfWriter
+        except Exception:
+            return totals
 
     def _first_match_val(pattern: str, text: str) -> Optional[float]:
         m = re.search(pattern, text, flags=re.IGNORECASE)
@@ -649,6 +655,8 @@ def _extract_pdf_totals(files: List[str]) -> Dict[str, float]:
             return "TARJETA CABAL"
         if "AMEX" in n or "AMERICAN" in n:
             return "TARJETA AMEX"
+        if "MAESTRO" in n:
+            return "TARJETA MAESTRO"
         if "MASTERCARD" in n or "MASTER" in n:
             return "TARJETA MASTERCARD"
         if "VISA" in n:
@@ -663,6 +671,8 @@ def _extract_pdf_totals(files: List[str]) -> Dict[str, float]:
             return "TARJETA CABAL"
         if re.search(r"\bAMEX\b|\bAMERICAN\s+EXPRESS\b", up):
             return "TARJETA AMEX"
+        if re.search(r"\bMAESTRO\b", up):
+            return "TARJETA MAESTRO"
         if re.search(r"\bMASTERCARD\b|\bMASTER\b", up):
             return "TARJETA MASTERCARD"
         if re.search(r"\bVISA\b", up):
@@ -741,7 +751,7 @@ def _extract_pdf_totals(files: List[str]) -> Dict[str, float]:
                     if m:
                         totals["card_name"] = re.sub(r"\s+", " ", m.group(0)).strip()
 
-            if card_by_brand and (totals["card_name"] is None or _is_generic_card_label(totals["card_name"])):
+            if card_by_brand and totals["card_name"] is None:
                 totals["card_name"] = card_by_brand
 
             if totals["period"] is None:
@@ -1152,8 +1162,8 @@ def _build_header_lines(bank: Optional[str], card: Optional[str], period: Option
 
     # Concepto breve y claro, priorizando período
     bank_short = bank_s
-    if re.search(r"BANCO\s+DE\s+LA\s+NACION\s+ARGENTINA", bank_s, flags=re.IGNORECASE):
-        bank_short = "BANCO NACION"
+    if re.search(r"(?:BANCO|BCO)\s+DE\s+LA\s+NACION\s+ARGENTINA", bank_s, flags=re.IGNORECASE):
+        bank_short = "BCO DE LA NACION ARGEN"
     card_short = card_s.replace("TARJETA DE ", "").strip()
     if not card_short:
         card_short = card_s
@@ -1275,14 +1285,28 @@ def _apply_pdf_overrides(text: str, pdf_totals: Dict[str, float], log_path: Opti
     iva_sum = float(pdf_totals.get("iva_sum") or 0.0)
     ret_iva_sum = float(pdf_totals.get("ret_iva_sum") or 0.0)
     ret_iibb_sum = float(pdf_totals.get("ret_iibb_sum") or 0.0)
-    ret_gan_sum = float(pdf_totals.get("ret_gan_sum") or 0.0)
     neto_sum = float(pdf_totals.get("neto_sum") or 0.0)
+    ret_gan_sum = float(pdf_totals.get("ret_gan_sum") or 0.0)
 
     total_presentado = pdf_totals.get("total_presentado")
     neto_header = pdf_totals.get("neto_header")
     bank_nacion = bool(pdf_totals.get("bank_nacion"))
     bank_patagonia = bool(pdf_totals.get("bank_patagonia"))
     header = _build_header_lines(pdf_totals.get("bank_name"), pdf_totals.get("card_name"), pdf_totals.get("period"))
+    if log_path:
+        _write_log(
+            log_path,
+            "PDF override input: "
+            + f"bank_nacion={bank_nacion} "
+            + f"bank_patagonia={bank_patagonia} "
+            + f"has_daily={has_daily} "
+            + f"daily_rows={len(pdf_totals.get('daily_rows') or [])} "
+            + f"ventas_sum={ventas_sum:.2f} "
+            + f"arancel_sum={arancel_sum:.2f} "
+            + f"iva_sum={iva_sum:.2f} "
+            + f"ret_iibb_sum={ret_iibb_sum:.2f} "
+            + f"neto_sum={neto_sum:.2f}",
+        )
 
     # Banco Patagonia: usar desglose de descuentos sin XLS de control
     if bank_patagonia and pdf_totals.get("patagonia_desglose"):
@@ -1538,6 +1562,32 @@ def _count_pdf_pages(file_path: str) -> int:
     except Exception:
         return 1
 
+def _pdf_reader_diagnostic(file_path: str) -> str:
+    bits: List[str] = []
+    bits.append(f"exists={Path(file_path).exists()}")
+    bits.append(f"pdfreader_none={PdfReader is None}")
+    try:
+        import pypdf as _pypdf
+        bits.append(f"pypdf_import=ok")
+        bits.append(f"pypdf_file={getattr(_pypdf, '__file__', '?')}")
+    except Exception as e:
+        bits.append(f"pypdf_import_err={type(e).__name__}:{e}")
+    try:
+        reader_cls = PdfReader
+        if reader_cls is None:
+            from pypdf import PdfReader as reader_cls
+        reader = reader_cls(file_path)
+        bits.append(f"open_ok_pages={len(reader.pages)}")
+        try:
+            sample = (reader.pages[0].extract_text() or "")[:80].replace("\r", " ").replace("\n", " ")
+            bits.append(f"sample={sample}")
+        except Exception as e:
+            bits.append(f"extract_err={type(e).__name__}:{e}")
+    except Exception as e:
+        bits.append(f"open_err={type(e).__name__}:{e}")
+    return " | ".join(bits)
+
+
 
 def _pdf_to_chunked_blocks(file_path: str, pages_per_chunk: int) -> List[Dict[str, Any]]:
     pages_per_chunk = int(pages_per_chunk or 0)
@@ -1772,6 +1822,21 @@ def main() -> None:
             result["log_path"] = str(log_path)
             _write_log(log_path, f"Inicio proceso. Archivos: {', '.join(args.files)}")
 
+            _write_log(
+                log_path,
+                "PDF totals preload: "
+                + f"bank_nacion={bool(pdf_totals.get('bank_nacion'))} "
+                + f"bank_patagonia={bool(pdf_totals.get('bank_patagonia'))} "
+                + f"bank_name={pdf_totals.get('bank_name')} "
+                + f"card_name={pdf_totals.get('card_name')} "
+                + f"period={pdf_totals.get('period')} "
+                + f"has_daily={bool(pdf_totals.get('has_daily'))} "
+                + f"daily_rows={len(pdf_totals.get('daily_rows') or [])} "
+                + f"total_presentado={pdf_totals.get('total_presentado')} "
+                + f"neto_header={pdf_totals.get('neto_header')}",
+            )
+            if Path(args.files[0]).suffix.lower() == '.pdf':
+                _write_log(log_path, 'PDF reader diag: ' + _pdf_reader_diagnostic(args.files[0]))
             status("Cargando prompt...")
             prompt = read_prompt(args.prompt_file.strip() or None)
             if "concepto|total" not in prompt.lower():
@@ -1780,6 +1845,8 @@ def main() -> None:
                 log_path,
                 f"Modelo: {args.model} | per-page: {args.per_page} | tile: {args.tile} | pdf-chunk-pages: {args.pdf_chunk_pages}",
             )
+            if Path(args.files[0]).suffix.lower() == '.pdf':
+                _write_log(log_path, 'PDF reader diag: ' + _pdf_reader_diagnostic(args.files[0]))
 
             status("Armando contenido...")
             log(
@@ -1920,3 +1987,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
