@@ -365,6 +365,19 @@ def normalize_schema(data: dict) -> dict:
     return data
 
 
+def normalize_provider_only_schema(data: dict) -> dict:
+    data = _ensure_object(data)
+    out = {
+        "codigo_proveedor": "",
+        "cuit": "",
+        "nombre_proveedor": "",
+    }
+    for key in out:
+        value = data.get(key, "")
+        out[key] = str(value).strip() if value is not None else ""
+    return out
+
+
 def infer_orden_columnas(data: dict) -> None:
     """Completa meta.orden_columnas si viene vacío.
     Intenta tomar "Detalle: ..." desde meta.comprobante_raw u observaciones.
@@ -900,6 +913,31 @@ Respondé SOLO JSON.
 """
 
 
+PROVIDER_ONLY_PROMPT = r"""
+Vas a analizar 1 a 5 paginas de una factura / comprobante de compra.
+Responde SOLO con JSON valido, sin texto adicional.
+
+Objetivo: identificar el proveedor para que otro sistema lo busque en base.
+
+Devolve exactamente este formato:
+{
+  "codigo_proveedor": "",
+  "cuit": "",
+  "nombre_proveedor": ""
+}
+
+Reglas:
+- "codigo_proveedor": solo si aparece de forma explicita en el documento como codigo interno del proveedor, cuenta proveedor, nro proveedor o equivalente.
+- No inventes "codigo_proveedor". Si no aparece con claridad, dejalo "".
+- "cuit": CUIT del proveedor/emisor, nunca el del cliente.
+- "nombre_proveedor": razon social o nombre del proveedor/emisor, nunca el cliente.
+- Si hay duda entre proveedor y cliente, prioriza siempre el emisor de la factura.
+- Si un dato no aparece o no es confiable, dejalo "".
+
+Responde SOLO JSON.
+"""
+
+
 def read_prompt(prompt_file: Optional[str]) -> str:
     if prompt_file:
         p = Path(prompt_file)
@@ -1024,6 +1062,11 @@ def main() -> None:
     parser.add_argument("--client-id", default="", help="Override IA_CLIENT_ID.")
     parser.add_argument("--client-secret", default="", help="Override IA_CLIENT_SECRET.")
     parser.add_argument("--ia-task", default="", help="Override IA_TASK/opcion.")
+    parser.add_argument(
+        "--proveedor",
+        action="store_true",
+        help="Modo reducido: extrae solo codigo/cuit/nombre del proveedor.",
+    )
     args = parser.parse_args()
 
     ui = None
@@ -1093,13 +1136,13 @@ def main() -> None:
             Path(outdir).mkdir(parents=True, exist_ok=True)
 
             status("Cargando prompt...")
-            prompt = read_prompt(args.prompt_file.strip() or None)
+            prompt = PROVIDER_ONLY_PROMPT if args.proveedor else read_prompt(args.prompt_file.strip() or None)
 
             if 'json' not in prompt.lower():
                 prompt = 'Responde solo con json.\n' + prompt
 
             status("Armando contenido...")
-            log(f"Modelo: {args.model} | per-page: {args.per_page} | tile: {args.tile}")
+            log(f"Modelo: {args.model} | per-page: {args.per_page} | tile: {args.tile} | proveedor: {args.proveedor}")
             content = [{"type": "input_text", "text": prompt}]
             total_files = len(args.files)
             for i, f in enumerate(args.files, start=1):
@@ -1125,8 +1168,11 @@ def main() -> None:
                     raw_path.write_text(out_text, encoding="utf-8", errors="replace")
                     raise SystemExit(f"ERROR: No se pudo parsear JSON. Se guardo la respuesta cruda en: {raw_path}") from e
 
-                data = normalize_schema(data)
-                infer_orden_columnas(data)
+                if args.proveedor:
+                    data = normalize_provider_only_schema(data)
+                else:
+                    data = normalize_schema(data)
+                    infer_orden_columnas(data)
                 return data
 
             def run_extraction(model_name: str) -> dict:
@@ -1153,9 +1199,10 @@ def main() -> None:
                 else:
                     data_model = call_model(content, model_name, args.files[0])
 
-                data_model["ROWS"] = dedupe_rows(_ensure_list(data_model.get("ROWS")))
-                adjust_importe_lista_for_bultos(data_model)
-                validate_totals_integrity(data_model, tolerance=0.03)
+                if not args.proveedor:
+                    data_model["ROWS"] = dedupe_rows(_ensure_list(data_model.get("ROWS")))
+                    adjust_importe_lista_for_bultos(data_model)
+                    validate_totals_integrity(data_model, tolerance=0.03)
                 return data_model
 
             fallback_enabled = (not args.no_fallback) and bool(args.fallback_model) and args.fallback_model != args.model
