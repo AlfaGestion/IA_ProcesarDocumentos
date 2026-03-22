@@ -33,6 +33,7 @@ import tempfile
 import threading
 import time
 import queue
+import concurrent.futures
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -93,7 +94,15 @@ class StatusUI:
         self.txt.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self.txt.configure(state="disabled")
 
+        self.actions = ttk.Frame(self.root)
+        self.actions.pack(fill="x", padx=12, pady=(0, 12))
+        self.retry_btn = ttk.Button(self.actions, text="Reintentar", command=self._handle_retry, state="disabled")
+        self.retry_btn.pack(side="right")
+        self.close_btn = ttk.Button(self.actions, text="Cerrar", command=self.close)
+        self.close_btn.pack(side="right", padx=(0, 8))
+
         self._closed = False
+        self._retry_callback = None
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.root.after(100, self._poll)
@@ -143,6 +152,7 @@ class StatusUI:
         self.txt.configure(state="disabled")
 
     def close(self):
+        self._closed = True
         try:
             self.pb.stop()
         except Exception:
@@ -154,6 +164,71 @@ class StatusUI:
 
     def mainloop(self):
         self.root.mainloop()
+
+    def finish(self, status_text: str, keep_open_seconds: float = 2.5):
+        """Muestra estado final unos segundos para que alcance a verse."""
+        self.push(f"STATUS:{status_text}")
+        try:
+            self.pb.stop()
+        except Exception:
+            pass
+        time.sleep(max(0.0, keep_open_seconds))
+        self.close()
+
+    def set_retry_callback(self, callback) -> None:
+        self._retry_callback = callback
+
+    def _handle_retry(self):
+        if callable(self._retry_callback):
+            self.set_retry_enabled(False)
+            self.clear_log()
+            self.reset_progress("Reintentando...")
+            self._retry_callback()
+
+    def set_retry_enabled(self, enabled: bool) -> None:
+        def _apply():
+            if self._closed:
+                return
+            self.retry_btn.configure(state="normal" if enabled else "disabled")
+
+        try:
+            self.root.after(0, _apply)
+        except Exception:
+            pass
+
+    def clear_log(self) -> None:
+        def _clear():
+            if self._closed:
+                return
+            self.txt.configure(state="normal")
+            self.txt.delete("1.0", "end")
+            self.txt.configure(state="disabled")
+
+        try:
+            self.root.after(0, _clear)
+        except Exception:
+            pass
+
+    def reset_progress(self, status_text: str = "Iniciando...") -> None:
+        def _reset():
+            if self._closed:
+                return
+            self.t0 = time.time()
+            self.lbl.configure(text=status_text)
+            self.lbl_time.configure(text="Tiempo: 00:00")
+            try:
+                self.pb.stop()
+            except Exception:
+                pass
+            try:
+                self.pb.start(10)
+            except Exception:
+                pass
+
+        try:
+            self.root.after(0, _reset)
+        except Exception:
+            pass
 
 
 # ----------------------------
@@ -247,6 +322,39 @@ def _normalize_outdir_arg(raw: str) -> str:
         s = s[1:-1].strip()
     s = s.rstrip(" '\"")
     return s
+
+
+def _normalize_cli_file_args(file_args: List[str]) -> List[str]:
+    """Recompone rutas con espacios cuando la shell las separó en varios tokens."""
+    def _clean_part(value: Any) -> str:
+        return str(value).strip().strip('"').strip("'")
+
+    normalized: List[str] = []
+    i = 0
+    total = len(file_args)
+    while i < total:
+        token = _clean_part(file_args[i])
+        best_match: Optional[str] = None
+        best_index = i
+
+        candidate = token
+        if candidate and Path(candidate).exists():
+            best_match = candidate
+
+        for j in range(i + 1, total):
+            candidate = f"{candidate} {_clean_part(file_args[j])}".strip()
+            if Path(candidate).exists():
+                best_match = candidate
+                best_index = j
+
+        if best_match:
+            normalized.append(best_match)
+            i = best_index + 1
+        else:
+            normalized.append(token)
+            i += 1
+
+    return normalized
 
 
 # ----------------------------
@@ -949,11 +1057,24 @@ def read_prompt(prompt_file: Optional[str]) -> str:
 # ----------------------------
 # Conversión de archivos a bloques para OpenAI
 # ----------------------------
-def file_to_content_block(file_path: str) -> Dict[str, Any]:
+def file_to_content_block(file_path: str, max_side: Optional[int] = None, jpeg_quality: int = 85) -> Dict[str, Any]:
     ext = Path(file_path).suffix.lower()
     data = Path(file_path).read_bytes()
 
     if ext in (".jpg", ".jpeg", ".png", ".webp"):
+        if Image is not None and max_side and max_side > 0:
+            try:
+                img = Image.open(io.BytesIO(data)).convert("RGB")
+                w, h = img.size
+                if max(w, h) > max_side:
+                    img.thumbnail((max_side, max_side))
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=max(50, min(int(jpeg_quality), 95)))
+                    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                    return {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
+            except Exception:
+                pass
+
         b64 = base64.b64encode(data).decode("utf-8")
         if ext in (".jpg", ".jpeg"):
             mime = "image/jpeg"
@@ -973,11 +1094,11 @@ def file_to_content_block(file_path: str) -> Dict[str, Any]:
 
     raise ValueError(f"Tipo no soportado: {ext}. Usá JPG/PNG/WEBP o PDF.")
 
-
-
-def file_to_content_blocks(file_path: str, tiles: int = 1) -> List[Dict[str, Any]]:
+def file_to_content_blocks(file_path: str, tiles: int = 1, provider_only: bool = False) -> List[Dict[str, Any]]:
     ext = Path(file_path).suffix.lower()
     if tiles <= 1 or ext == ".pdf":
+        if provider_only and ext in (".jpg", ".jpeg", ".png", ".webp"):
+            return [file_to_content_block(file_path, max_side=1600, jpeg_quality=72)]
         return [file_to_content_block(file_path)]
 
     if Image is None:
@@ -1008,6 +1129,36 @@ def file_to_content_blocks(file_path: str, tiles: int = 1) -> List[Dict[str, Any
         blocks.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
 
     return blocks
+
+
+def call_backend_with_hard_timeout(
+    *,
+    content_blocks: List[Dict[str, Any]],
+    model: str,
+    max_output_tokens: int,
+    text: Optional[Dict[str, Any]] = None,
+    source_filename: Optional[str] = None,
+    timeout_seconds: int = 300,
+) -> str:
+    """Aplica un timeout duro al backend para evitar procesos colgados."""
+
+    def _run() -> str:
+        return call_backend(
+            content_blocks=content_blocks,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            text=text,
+            source_filename=source_filename,
+            timeout_seconds=timeout_seconds,
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_run)
+        try:
+            return future.result(timeout=max(1, int(timeout_seconds)))
+        except concurrent.futures.TimeoutError as e:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise SystemExit(f"ERROR backend timeout: superó el límite de {int(timeout_seconds)}s.") from e
 
 
 # ----------------------------
@@ -1068,6 +1219,7 @@ def main() -> None:
         help="Modo reducido: extrae solo codigo/cuit/nombre del proveedor.",
     )
     args = parser.parse_args()
+    args.files = _normalize_cli_file_args(list(args.files))
 
     ui = None
     if args.gui:
@@ -1076,6 +1228,8 @@ def main() -> None:
             ui.push("STATUS:Inicializando...")
         except Exception:
             ui = None
+
+    worker_lock = threading.Lock()
 
     def log(msg: str):
         if ui:
@@ -1088,8 +1242,14 @@ def main() -> None:
     result = {"out_path": None, "error": None}
 
     def worker():
+        with worker_lock:
+            result["out_path"] = None
+            result["error"] = None
+            if ui:
+                ui.set_retry_enabled(False)
         try:
             status("Cargando .env / variables...")
+            log("Inicio de procesamiento...")
             if not args.no_local_env:
                 load_env_near_app()
             if args.env_file:
@@ -1107,15 +1267,30 @@ def main() -> None:
 
             if not args.files:
                 raise SystemExit("ERROR: Debés pasar 1 a 5 archivos por parámetro.")
-            if len(args.files) > 5:
+            active_files = list(args.files)
+            if args.proveedor and len(active_files) > 1:
+                ignored = len(active_files) - 1
+                active_files = active_files[:1]
+                log(
+                    f"Modo proveedor: se procesa solo el primer archivo y se omiten {ignored} archivo(s) adicional(es)."
+                )
+            elif len(active_files) > 5:
                 raise SystemExit("ERROR: Máximo 5 archivos.")
+            if args.proveedor:
+                # En modo proveedor priorizamos tiempo de respuesta: 1 archivo, sin tiling ni per-page.
+                args.tile = 1
+                args.per_page = False
+            elif len(active_files) > 1 and not args.auto and not args.per_page and args.tile == 1:
+                #a 21-03-2026 Codex - si entran varias paginas, activar auto por defecto para no perder renglones
+                args.auto = True
+                log("Auto activado por multiples paginas.")
 
             if args.tile < 1 or args.tile > 6:
                 raise SystemExit("ERROR: --tile debe ser un entero entre 1 y 6.")
 
             # Auto-ajuste simple segun cantidad de paginas
             if args.auto:
-                n = len(args.files)
+                n = len(active_files)
                 if n <= 1:
                     args.tile = 3
                     args.per_page = False
@@ -1127,7 +1302,7 @@ def main() -> None:
                     args.per_page = True
 
             status("Validando archivos...")
-            for f in args.files:
+            for f in active_files:
                 if not Path(f).exists():
                     raise SystemExit(f"ERROR: No existe el archivo: {f}")
 
@@ -1144,27 +1319,30 @@ def main() -> None:
             status("Armando contenido...")
             log(f"Modelo: {args.model} | per-page: {args.per_page} | tile: {args.tile} | proveedor: {args.proveedor}")
             content = [{"type": "input_text", "text": prompt}]
-            total_files = len(args.files)
-            for i, f in enumerate(args.files, start=1):
+            total_files = len(active_files)
+            for i, f in enumerate(active_files, start=1):
                 status(f"Adjuntando página {i}/{total_files}...")
                 log(f"Archivo: {f}")
-                content.extend(file_to_content_blocks(f, args.tile))
+                content.extend(file_to_content_blocks(f, args.tile, provider_only=args.proveedor))
 
             status("Analizando con Inteligencia Artificial...")
             log("Motor IA: Activo")
             def call_model(content_blocks: List[Dict[str, Any]], model_name: str, source_file: str) -> dict:
-                out_text = call_backend(
+                backend_timeout = 20 if args.proveedor else 300
+                max_output_tokens = 800 if args.proveedor else 16000
+                out_text = call_backend_with_hard_timeout(
                     content_blocks=content_blocks,
                     model=model_name,
-                    max_output_tokens=16000,
+                    max_output_tokens=max_output_tokens,
                     text={"format": {"type": "json_object"}},
                     source_filename=Path(source_file).name,
+                    timeout_seconds=backend_timeout,
                 )
 
                 try:
                     data = extract_first_json(out_text)
                 except Exception as e:
-                    raw_path = Path(outdir) / f"{Path(args.files[0]).stem}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_raw.txt"
+                    raw_path = Path(outdir) / f"{Path(active_files[0]).stem}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_raw.txt"
                     raw_path.write_text(out_text, encoding="utf-8", errors="replace")
                     raise SystemExit(f"ERROR: No se pudo parsear JSON. Se guardo la respuesta cruda en: {raw_path}") from e
 
@@ -1176,11 +1354,11 @@ def main() -> None:
                 return data
 
             def run_extraction(model_name: str) -> dict:
-                if args.per_page and len(args.files) > 1:
+                if args.per_page and len(active_files) > 1:
                     page_results: List[dict] = []
-                    total_files = len(args.files)
+                    total_files = len(active_files)
                     t_pages_start = time.time()
-                    for i, f in enumerate(args.files, start=1):
+                    for i, f in enumerate(active_files, start=1):
                         # ETA aproximado basado en promedio por p?gina procesada
                         if i > 1:
                             elapsed = time.time() - t_pages_start
@@ -1193,11 +1371,11 @@ def main() -> None:
                             status(f"IA por pagina {i}/{total_files}...")
                         log(f"Archivo: {f}")
                         page_content = [{"type": "input_text", "text": prompt}]
-                        page_content.extend(file_to_content_blocks(f, args.tile))
+                        page_content.extend(file_to_content_blocks(f, args.tile, provider_only=args.proveedor))
                         page_results.append(call_model(page_content, model_name, f))
                     data_model = merge_data_keep_best(page_results)
                 else:
-                    data_model = call_model(content, model_name, args.files[0])
+                    data_model = call_model(content, model_name, active_files[0])
 
                 if not args.proveedor:
                     data_model["ROWS"] = dedupe_rows(_ensure_list(data_model.get("ROWS")))
@@ -1237,7 +1415,7 @@ def main() -> None:
 
             status("Guardando JSON...")
             # Mantener exactamente el nombre original (solo cambia extension a .json)
-            base = Path(args.files[0]).stem
+            base = Path(active_files[0]).stem
             out_path = Path(outdir) / f"{base}.json"
             out_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1255,13 +1433,23 @@ def main() -> None:
             if result["error"]:
                 ui.push("STATUS:Error ❌")
                 ui.push(result["error"])
-            time.sleep(0.8)
-            ui.close()
+                ui.set_retry_enabled(True)
+            else:
+                ui.push("Proceso finalizado correctamente.")
+                ui.finish("Listo ✅", keep_open_seconds=2.5)
+
+    def start_worker() -> None:
+        if worker_lock.locked():
+            return
+        if ui:
+            ui.reset_progress("Inicializando...")
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
 
     # Ejecutar con GUI (thread) o directo
     if ui:
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
+        ui.set_retry_callback(start_worker)
+        start_worker()
         ui.mainloop()
     else:
         worker()
@@ -1276,3 +1464,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
