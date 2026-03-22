@@ -1,4 +1,4 @@
-('C:\\dev\\IA_ProcesarDocumentos\\build\\lector_facturas_to_json_v5\\PYZ-00.pyz',
+('C:\\dev\\IA_ProcesarDocumentos\\build_py314_facturas_timeout\\lector_facturas_to_json_v5\\PYZ-00.pyz',
  [('PIL',
    'C:\\Users\\albert\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PIL\\__init__.py',
    'PYMODULE'),
