@@ -828,6 +828,58 @@ def merge_data_keep_best(datas: List[dict]) -> dict:
     return out
 
 
+def _normalize_invoice_match_value(value: Any) -> str:
+    s = str(value or "").strip().upper()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _invoice_identity_snapshot(data: dict) -> Dict[str, str]:
+    cab = _ensure_object(data.get("CAB"))
+    return {
+        "NUMERO_CUIT": _normalize_invoice_match_value(cab.get("NUMERO_CUIT")),
+        "SUCURSAL": _normalize_invoice_match_value(cab.get("SUCURSAL")),
+        "NUMERO": _normalize_invoice_match_value(cab.get("NUMERO")),
+        "LETRA": _normalize_invoice_match_value(cab.get("LETRA")),
+        "Fecha": _normalize_invoice_match_value(cab.get("Fecha")),
+        "Nombre": _normalize_invoice_match_value(cab.get("Nombre")),
+    }
+
+
+def detect_mismatched_invoice_pages(page_results: List[dict], page_files: List[str]) -> tuple[List[dict], List[str]]:
+    """Conserva la primera factura detectada y omite páginas con identificadores incompatibles."""
+    if not page_results:
+        return [], []
+
+    accepted = [page_results[0]]
+    warnings: List[str] = []
+    base_snapshot = _invoice_identity_snapshot(page_results[0])
+
+    for idx, data in enumerate(page_results[1:], start=1):
+        current_snapshot = _invoice_identity_snapshot(data)
+        conflicts: List[str] = []
+        for key in ("NUMERO_CUIT", "SUCURSAL", "NUMERO", "LETRA", "Fecha"):
+            base_value = base_snapshot.get(key) or ""
+            current_value = current_snapshot.get(key) or ""
+            if base_value and current_value and base_value != current_value:
+                conflicts.append(f"{key}: '{base_value}' vs '{current_value}'")
+
+        if conflicts:
+            file_name = Path(page_files[idx]).name
+            warnings.append(
+                f"Se omite '{file_name}' por no coincidir con la primera factura ({'; '.join(conflicts)})."
+            )
+            continue
+
+        accepted.append(data)
+
+        for key, value in current_snapshot.items():
+            if not base_snapshot.get(key) and value:
+                base_snapshot[key] = value
+
+    return accepted, warnings
+
+
 
 def dedupe_rows(rows: List[dict]) -> List[dict]:
     seen = set()
@@ -1354,7 +1406,7 @@ def main() -> None:
                 return data
 
             def run_extraction(model_name: str) -> dict:
-                if args.per_page and len(active_files) > 1:
+                if len(active_files) > 1:
                     page_results: List[dict] = []
                     total_files = len(active_files)
                     t_pages_start = time.time()
@@ -1373,7 +1425,16 @@ def main() -> None:
                         page_content = [{"type": "input_text", "text": prompt}]
                         page_content.extend(file_to_content_blocks(f, args.tile, provider_only=args.proveedor))
                         page_results.append(call_model(page_content, model_name, f))
-                    data_model = merge_data_keep_best(page_results)
+                    accepted_results, ignored_warnings = detect_mismatched_invoice_pages(page_results, active_files)
+                    for warning in ignored_warnings:
+                        log(warning)
+                    data_model = merge_data_keep_best(accepted_results)
+                    if ignored_warnings and not args.proveedor:
+                        meta = _ensure_object(data_model.get("meta"))
+                        data_model["meta"] = meta
+                        existing_obs = str(meta.get("observaciones") or "").strip()
+                        warning_text = " ".join(ignored_warnings)
+                        meta["observaciones"] = f"{existing_obs} {warning_text}".strip() if existing_obs else warning_text
                 else:
                     data_model = call_model(content, model_name, active_files[0])
 
