@@ -34,11 +34,18 @@ import threading
 import time
 import queue
 import concurrent.futures
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from ia_backend_transport import backend_enabled, call_backend
+
+try:
+    from pypdf import PdfReader, PdfWriter
+except Exception:
+    PdfReader = None
+    PdfWriter = None
 
 
 # ----------------------------
@@ -355,6 +362,50 @@ def _normalize_cli_file_args(file_args: List[str]) -> List[str]:
             i += 1
 
     return normalized
+
+
+def _count_pdf_pages(file_path: str) -> int:
+    if PdfReader is None:
+        return 1
+    try:
+        return max(1, len(PdfReader(file_path).pages))
+    except Exception:
+        return 1
+
+
+def _expand_pdf_inputs(file_paths: List[str], temp_dir: str) -> tuple[List[str], List[str]]:
+    """Convierte PDFs multipagina en PDFs temporales de 1 hoja para procesarlos en orden."""
+    expanded: List[str] = []
+    created_temp_files: List[str] = []
+
+    for file_path in file_paths:
+        ext = Path(file_path).suffix.lower()
+        if ext != ".pdf":
+            expanded.append(file_path)
+            continue
+
+        total_pages = _count_pdf_pages(file_path)
+        if total_pages <= 1:
+            expanded.append(file_path)
+            continue
+
+        if PdfReader is None or PdfWriter is None:
+            raise SystemExit(
+                "ERROR: Para procesar todas las hojas de un PDF multipagina necesitás instalar pypdf: pip install pypdf"
+            )
+
+        reader = PdfReader(file_path)
+        stem = Path(file_path).stem
+        for page_index in range(total_pages):
+            writer = PdfWriter()
+            writer.add_page(reader.pages[page_index])
+            temp_page = Path(temp_dir) / f"{stem}__page_{page_index + 1:03d}.pdf"
+            with temp_page.open("wb") as fh:
+                writer.write(fh)
+            expanded.append(str(temp_page))
+            created_temp_files.append(str(temp_page))
+
+    return expanded, created_temp_files
 
 
 # ----------------------------
@@ -1294,6 +1345,8 @@ def main() -> None:
     result = {"out_path": None, "error": None}
 
     def worker():
+        temp_files_to_cleanup: List[str] = []
+        temp_processing_dir: Optional[str] = None
         with worker_lock:
             result["out_path"] = None
             result["error"] = None
@@ -1319,26 +1372,43 @@ def main() -> None:
 
             if not args.files:
                 raise SystemExit("ERROR: Debés pasar 1 a 5 archivos por parámetro.")
-            active_files = list(args.files)
-            if args.proveedor and len(active_files) > 1:
-                ignored = len(active_files) - 1
-                active_files = active_files[:1]
+            source_files = list(args.files)
+            if args.proveedor and len(source_files) > 1:
+                ignored = len(source_files) - 1
+                source_files = source_files[:1]
                 log(
                     f"Modo proveedor: se procesa solo el primer archivo y se omiten {ignored} archivo(s) adicional(es)."
                 )
-            elif len(active_files) > 5:
+            elif len(source_files) > 5:
                 raise SystemExit("ERROR: Máximo 5 archivos.")
             if args.proveedor:
                 # En modo proveedor priorizamos tiempo de respuesta: 1 archivo, sin tiling ni per-page.
                 args.tile = 1
                 args.per_page = False
-            elif len(active_files) > 1 and not args.auto and not args.per_page and args.tile == 1:
-                #a 21-03-2026 Codex - si entran varias paginas, activar auto por defecto para no perder renglones
-                args.auto = True
-                log("Auto activado por multiples paginas.")
 
             if args.tile < 1 or args.tile > 6:
                 raise SystemExit("ERROR: --tile debe ser un entero entre 1 y 6.")
+
+            status("Validando archivos...")
+            for f in source_files:
+                if not Path(f).exists():
+                    raise SystemExit(f"ERROR: No existe el archivo: {f}")
+
+            status("Preparando salida...")
+            outdir = _normalize_outdir_arg(args.outdir) or tempfile.gettempdir()
+            Path(outdir).mkdir(parents=True, exist_ok=True)
+            temp_processing_dir = tempfile.mkdtemp(prefix="fact_pdf_pages_")
+
+            status("Separando paginas PDF...")
+            active_files, temp_files_to_cleanup = _expand_pdf_inputs(source_files, temp_processing_dir)
+
+            if len(active_files) > 5:
+                raise SystemExit("ERROR: Máximo 5 hojas/páginas en total.")
+
+            if not args.proveedor and len(active_files) > 1 and not args.auto and not args.per_page and args.tile == 1:
+                # a 21-03-2026 Codex - si entran varias paginas, activar auto por defecto para no perder renglones
+                args.auto = True
+                log("Auto activado por multiples paginas.")
 
             # Auto-ajuste simple segun cantidad de paginas
             if args.auto:
@@ -1352,15 +1422,6 @@ def main() -> None:
                 else:
                     args.tile = 5
                     args.per_page = True
-
-            status("Validando archivos...")
-            for f in active_files:
-                if not Path(f).exists():
-                    raise SystemExit(f"ERROR: No existe el archivo: {f}")
-
-            status("Preparando salida...")
-            outdir = _normalize_outdir_arg(args.outdir) or tempfile.gettempdir()
-            Path(outdir).mkdir(parents=True, exist_ok=True)
 
             status("Cargando prompt...")
             prompt = PROVIDER_ONLY_PROMPT if args.proveedor else read_prompt(args.prompt_file.strip() or None)
@@ -1488,6 +1549,17 @@ def main() -> None:
             result["error"] = str(e)
         except Exception as e:
             result["error"] = f"ERROR: {e!r}"
+        finally:
+            for temp_file in temp_files_to_cleanup:
+                try:
+                    Path(temp_file).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            if temp_processing_dir:
+                try:
+                    shutil.rmtree(temp_processing_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
         if ui:
             # que se llegue a ver el “Listo” o el error
