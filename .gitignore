@@ -3,6 +3,8 @@
 __pycache__/
 *.pyc
 build/
+build_*/
 dist/
+dist_*/
 LOG/
 *.log
