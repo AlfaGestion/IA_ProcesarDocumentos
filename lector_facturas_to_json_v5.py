@@ -1098,7 +1098,6 @@ Y vos interpretás:
   "Artículo"       ? "Descripcion"
   "Precio Unit"    ? "Importe_Neto"
   "Importe"        ? "Total"
-
 Entonces devolvé:
   meta.orden_columnas = ["Cantidad","Codigo_Articulo","Descripcion","Importe_Neto","Total"]
 
