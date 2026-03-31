@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import unicodedata
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -76,14 +77,10 @@ def _collect_supported_files(root: Path, include_pdfs_only: bool) -> List[Path]:
 
 def _load_json_from_reader(reader_script: Path, source_files: List[Path]) -> dict:
     with tempfile.TemporaryDirectory(prefix="organizar_compras_") as tmpdir:
-        cmd = [
-            sys.executable,
-            str(reader_script),
-            *[str(p) for p in source_files],
-            "--outdir",
-            tmpdir,
-            "--auto",
-        ]
+        if reader_script.suffix.lower() == ".exe":
+            cmd = [str(reader_script), *[str(p) for p in source_files], "--outdir", tmpdir, "--auto"]
+        else:
+            cmd = [sys.executable, str(reader_script), *[str(p) for p in source_files], "--outdir", tmpdir, "--auto"]
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -445,10 +442,148 @@ def _log_existing_dirs(root: Path, log_path: Path) -> None:
         _append_log(log_path, status="SKIP", old_name=folder.name, new_name=folder.name, detail=detail)
 
 
+def _run_gui() -> int:
+    try:
+        import tkinter as tk
+        from tkinter import ttk, filedialog, scrolledtext
+        import tkinter.messagebox as mb
+    except ImportError:
+        print("ERROR: tkinter no está disponible. Use parámetros por línea de comandos.")
+        return 1
+
+    root_win = tk.Tk()
+    root_win.title("Organizar Carpetas Compras")
+    root_win.minsize(620, 520)
+
+    var_root = tk.StringVar()
+    var_apply = tk.BooleanVar(value=False)
+    var_max_files = tk.IntVar(value=5)
+    var_pdfs_only = tk.BooleanVar(value=False)
+    var_keep_accents = tk.BooleanVar(value=False)
+    var_log_file = tk.StringVar(value="organizar_carpetas_compras.log")
+    var_limit = tk.IntVar(value=0)
+
+    # --- Formulario ---
+    form = ttk.LabelFrame(root_win, text="Parámetros", padding=10)
+    form.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+    form.columnconfigure(1, weight=1)
+
+    ttk.Label(form, text="Carpeta base:").grid(row=0, column=0, sticky="w", pady=3)
+    ttk.Entry(form, textvariable=var_root, width=50).grid(row=0, column=1, sticky="ew", padx=(5, 2), pady=3)
+
+    def _browse() -> None:
+        folder = filedialog.askdirectory(title="Seleccionar carpeta base")
+        if folder:
+            var_root.set(folder)
+
+    ttk.Button(form, text="Examinar...", command=_browse).grid(row=0, column=2, padx=(2, 0), pady=3)
+
+    ttk.Checkbutton(form, text="Aplicar cambios reales  (sin esto solo simula)", variable=var_apply).grid(
+        row=1, column=0, columnspan=3, sticky="w", pady=2
+    )
+    ttk.Checkbutton(form, text="Solo PDFs  (ignorar imágenes)", variable=var_pdfs_only).grid(
+        row=2, column=0, columnspan=3, sticky="w", pady=2
+    )
+    ttk.Checkbutton(form, text="Conservar acentos en el nombre final", variable=var_keep_accents).grid(
+        row=3, column=0, columnspan=3, sticky="w", pady=2
+    )
+
+    num_frame = ttk.Frame(form)
+    num_frame.grid(row=4, column=0, columnspan=3, sticky="w", pady=4)
+    ttk.Label(num_frame, text="Máx. archivos por grupo:").pack(side="left")
+    ttk.Spinbox(num_frame, textvariable=var_max_files, from_=1, to=50, width=6).pack(side="left", padx=(5, 20))
+    ttk.Label(num_frame, text="Límite de grupos (0 = sin límite):").pack(side="left")
+    ttk.Spinbox(num_frame, textvariable=var_limit, from_=0, to=10000, width=8).pack(side="left", padx=5)
+
+    ttk.Label(form, text="Archivo de log:").grid(row=5, column=0, sticky="w", pady=3)
+    ttk.Entry(form, textvariable=var_log_file, width=40).grid(row=5, column=1, columnspan=2, sticky="ew", padx=5, pady=3)
+
+    # --- Salida ---
+    out_frame = ttk.LabelFrame(root_win, text="Salida", padding=5)
+    out_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+    txt = scrolledtext.ScrolledText(out_frame, width=80, height=18, state="disabled", wrap="word")
+    txt.pack(fill="both", expand=True)
+
+    # --- Botones ---
+    btn_frame = ttk.Frame(root_win, padding=(10, 0, 10, 10))
+    btn_frame.grid(row=2, column=0, sticky="ew")
+
+    result_code = [0]
+
+    def _append(text: str) -> None:
+        txt.configure(state="normal")
+        txt.insert("end", text)
+        txt.see("end")
+        txt.configure(state="disabled")
+
+    class _GuiStream:
+        def write(self, text: str) -> None:
+            if text:
+                root_win.after(0, _append, text)
+
+        def flush(self) -> None:
+            pass
+
+    def _run() -> None:
+        root_val = var_root.get().strip()
+        if not root_val:
+            mb.showerror("Error", "Debe seleccionar la carpeta base.")
+            return
+
+        argv: List[str] = [root_val]
+        if var_apply.get():
+            argv.append("--apply")
+        argv += ["--max-files", str(var_max_files.get())]
+        if var_pdfs_only.get():
+            argv.append("--include-pdfs-only")
+        if var_keep_accents.get():
+            argv.append("--keep-accents")
+        argv += ["--log-file", var_log_file.get().strip() or "organizar_carpetas_compras.log"]
+        argv += ["--limit", str(var_limit.get())]
+
+        btn_run.configure(state="disabled")
+        txt.configure(state="normal")
+        txt.delete("1.0", "end")
+        txt.configure(state="disabled")
+
+        def _worker() -> None:
+            old_stdout = sys.stdout
+            sys.stdout = _GuiStream()
+            try:
+                code = main(argv)
+                result_code[0] = code
+            except Exception as exc:
+                sys.stdout = old_stdout
+                root_win.after(0, _append, f"\nERROR inesperado: {exc}\n")
+                root_win.after(0, lambda: btn_run.configure(state="normal"))
+                return
+            finally:
+                sys.stdout = old_stdout
+            label = "FINALIZADO" if code == 0 else f"FINALIZADO CON ADVERTENCIAS (código {code})"
+            root_win.after(0, _append, f"\n--- {label} ---\n")
+            root_win.after(0, lambda: btn_run.configure(state="normal"))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    btn_run = ttk.Button(btn_frame, text="Ejecutar", command=_run)
+    btn_run.pack(side="left", padx=(0, 5))
+    ttk.Button(btn_frame, text="Cerrar", command=root_win.destroy).pack(side="left")
+
+    root_win.columnconfigure(0, weight=1)
+    root_win.rowconfigure(1, weight=1)
+    root_win.mainloop()
+    return result_code[0]
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    if argv is None and not sys.argv[1:]:
+        return _run_gui()
     args = _parse_args(argv)
     root = Path(args.root).expanduser().resolve()
-    reader_script = Path(__file__).resolve().with_name("lector_facturas_to_json_v5.py")
+    if getattr(sys, "frozen", False):
+        reader_script = Path(sys.executable).resolve().with_name("lector_facturas_to_json_v5.exe")
+    else:
+        reader_script = Path(__file__).resolve().with_name("lector_facturas_to_json_v5.py")
     log_path = _resolve_log_path(root, args.log_file)
 
     if not root.exists() or not root.is_dir():

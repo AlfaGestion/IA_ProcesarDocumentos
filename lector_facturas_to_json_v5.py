@@ -454,6 +454,7 @@ TOTALES_KEYS = [
     "IVA 10.5%",
     "IVA 27%",
     "Otros",
+    "Percepcion IVA",
     "Percepcion IIBB",
     "Percepcion Ganancias",
     "Impuestos internos",
