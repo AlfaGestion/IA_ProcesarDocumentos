@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unicodedata
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -33,11 +34,13 @@ except ImportError:
 SUPPORTED_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 INVALID_WIN_CHARS = '<>:"/\\|?*'
 
+VERSION          = "1.1"
+
 DEFAULT_SERVER   = "SERVER-ALFAVB6"
 DEFAULT_DATABASE = "ALFANET"
 DEFAULT_USER     = "ALFANET"
 DEFAULT_PASSWORD = "ALFANET"
-DEFAULT_DRIVER   = "SQL Server Native Client 11.0"
+DEFAULT_DRIVER   = "ODBC Driver 18 for SQL Server"
 
 
 # ---------------------------------------------------------------------------
@@ -264,12 +267,15 @@ def _resolve_reader_script(base_dir: Path) -> Path:
     return base_dir / "lector_facturas_to_json_v5.py"
 
 
-def _load_json_from_reader(reader_script: Path, source_files: List[Path]) -> dict:
+def _load_json_from_reader(reader_script: Path, source_files: List[Path],
+                           prompt_file: Optional[Path] = None) -> dict:
     with tempfile.TemporaryDirectory(prefix="staging_compras_") as tmpdir:
         if reader_script.suffix.lower() == ".exe":
             cmd = [str(reader_script), *[str(p) for p in source_files], "--outdir", tmpdir, "--auto"]
         else:
             cmd = [sys.executable, str(reader_script), *[str(p) for p in source_files], "--outdir", tmpdir, "--auto"]
+        if prompt_file and prompt_file.exists():
+            cmd += ["--prompt-file", str(prompt_file)]
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or f"código {proc.returncode}").strip()
@@ -460,6 +466,61 @@ def _test_connection(conn_str: str) -> Optional[str]:
         return str(e)
 
 
+def _cfg(conn_str: str, clave: str, *,
+         grupo: Optional[str] = None,
+         valor_filter: Optional[str] = None,
+         field: str = "Valor") -> Optional[str]:
+    """
+    Helper equivalente a la función cfg() de VB6.
+    Busca en TA_CONFIGURACION y devuelve el campo indicado (Valor por defecto).
+    Con field='ValorAux' devuelve el campo ntext.
+    """
+    if pyodbc is None:
+        return None
+    conditions = ["Clave = ?"]
+    params: list = [clave]
+    if grupo is not None:
+        conditions.append("Grupo = ?")
+        params.append(grupo)
+    if valor_filter is not None:
+        conditions.append("Valor = ?")
+        params.append(valor_filter)
+    sql = f"SELECT {field} FROM TA_CONFIGURACION WHERE {' AND '.join(conditions)}"
+    try:
+        with pyodbc.connect(conn_str, timeout=10) as conn:
+            row = conn.cursor().execute(sql, *params).fetchone()
+            return str(row[0]) if row and row[0] is not None else None
+    except Exception:
+        return None
+
+
+def _build_prompt_file(conn_str: str, cuenta_contable: str) -> Optional[Path]:
+    """
+    Genera Prompt_{cuenta_contable}.txt combinando el prompt base de
+    IA_PROMPT_COMPRAS + la excepción del proveedor (si existe).
+    Lo guarda en la ruta configurada en 'RutaDocumentosCompras'.
+    Devuelve el Path del archivo o None si no hay prompt base.
+    """
+    prompt_base = _cfg(conn_str, "IA_PROMPT_COMPRAS", valor_filter="DEFAULT", field="ValorAux")
+    if not prompt_base:
+        return None
+
+    prompt_exc = _cfg(conn_str, cuenta_contable, grupo="Compras", field="ValorAux") if cuenta_contable else None
+    prompt_text = prompt_base
+    if prompt_exc:
+        prompt_text = prompt_base.rstrip() + "\n\n" + prompt_exc.strip()
+
+    ruta_str = _cfg(conn_str, "RutaDocumentosCompras")
+    if not ruta_str:
+        return None
+
+    dest = Path(ruta_str)
+    dest.mkdir(parents=True, exist_ok=True)
+    prompt_path = dest / f"Prompt_{cuenta_contable}.txt"
+    prompt_path.write_text(prompt_text, encoding="utf-8")
+    return prompt_path
+
+
 def _lookup_provider(conn_str: str, cuit: str, nombre: str, domicilio: str) -> Tuple[Optional[str], Optional[str], str]:
     """Devuelve (CODIGO, RAZON_SOCIAL, metodo) o (None, None, '') si no encontró."""
     if pyodbc is None:
@@ -546,7 +607,9 @@ def _insert_staging(conn_str: str, cab_data: dict, det_rows: List[dict]) -> int:
                 Percepcion_IVA, Percepcion_IIBB, Percepcion_Ganancias,
                 ImpuestosInternos, OtrosImpuestos, Total,
                 Lector_Observaciones, Lector_Error
-            ) VALUES (?,GETDATE(),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            )
+            OUTPUT INSERTED.ID
+            VALUES (?,GETDATE(),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             cab_data["Estado"],
             cab_data["Archivo_RutaOriginal"],
@@ -582,7 +645,6 @@ def _insert_staging(conn_str: str, cab_data: dict, det_rows: List[dict]) -> int:
             cab_data["Lector_Observaciones"],
             cab_data["Lector_Error"],
         )
-        cur.execute("SELECT SCOPE_IDENTITY()")
         id_cab = int(cur.fetchone()[0])
 
         for idx, row in enumerate(det_rows, 1):
@@ -652,9 +714,25 @@ def _process_group(
     if apply and _already_in_staging(conn_str, files[0].name):
         return "SKIP", source_names, "ya existe en staging"
 
-    # Llamar al lector
+    def _do_read(prompt_file: Optional[Path] = None) -> dict:
+        data = _load_json_from_reader(reader_script, files, prompt_file)
+        cab_ = data.get("CAB") if isinstance(data, dict) else None
+        tot_ = data.get("TOTALES") if isinstance(data, dict) else {}
+        rows_ = data.get("ROWS") if isinstance(data, dict) else []
+        meta_ = data.get("meta") if isinstance(data, dict) else {}
+        return (
+            data,
+            cab_ if isinstance(cab_, dict) else {},
+            tot_ if isinstance(tot_, dict) else {},
+            rows_ if isinstance(rows_, list) else [],
+            meta_ if isinstance(meta_, dict) else {},
+        )
+
+    # Primera lectura con prompt base (DEFAULT)
+    default_prompt = _build_prompt_file(conn_str, "DEFAULT") if conn_str else None
+    print(f"  Leyendo: {source_names} ...")
     try:
-        data = _load_json_from_reader(reader_script, files)
+        data, cab, tot, rows, meta = _do_read(default_prompt)
     except Exception as exc:
         cab_data = _build_cab_data_error(files, str(exc))
         if apply:
@@ -664,24 +742,23 @@ def _process_group(
                 return "ERROR", source_names, f"lector falló: {exc} | SQL falló: {e2}"
         return "ERROR", source_names, f"lector: {exc}"
 
-    cab = data.get("CAB") if isinstance(data, dict) else None
-    tot = data.get("TOTALES") if isinstance(data, dict) else None
-    rows = data.get("ROWS") if isinstance(data, dict) else []
-    meta = data.get("meta") if isinstance(data, dict) else {}
-    if not isinstance(cab, dict):
-        cab = {}
-    if not isinstance(tot, dict):
-        tot = {}
-    if not isinstance(rows, list):
-        rows = []
-    if not isinstance(meta, dict):
-        meta = {}
-
     # Lookup proveedor
     cuit    = _digits_only(_cab_pick(cab, "CUIT", "NUMERO_CUIT"))
     nombre  = _cab_pick(cab, "Proveedor", "Nombre")
     domicil = _cab_pick(cab, "Domicilio")
+    print(f"  Buscando proveedor: {nombre or cuit or '?'} ...")
     cuenta_contable, razon_social_sql, match_metodo = _lookup_provider(conn_str, cuit, nombre, domicil)
+
+    # Si el proveedor tiene excepción de prompt, re-leer con prompt combinado
+    if cuenta_contable:
+        exc_text = _cfg(conn_str, cuenta_contable, grupo="Compras", field="ValorAux")
+        if exc_text:
+            print(f"  Re-leyendo con prompt específico del proveedor ...")
+            combined_prompt = _build_prompt_file(conn_str, cuenta_contable)
+            try:
+                data, cab, tot, rows, meta = _do_read(combined_prompt)
+            except Exception as exc:
+                print(f"  AVISO: re-lectura con prompt específico falló, usando resultado anterior. {exc}")
 
     estado = "PENDIENTE"
     if not cuenta_contable:
@@ -741,12 +818,14 @@ def _process_group(
 
     if apply:
         # Grabar en SQL
+        print(f"  Grabando en SQL ...")
         try:
             _insert_staging(conn_str, cab_data, rows)
         except Exception as e:
             return "ERROR", source_names, f"SQL insert falló: {e}"
         # Renombrar archivos
         if base_name and targets:
+            print(f"  Moviendo archivos a {targets[0].parent} ...")
             try:
                 for src, tgt in zip(files, targets):
                     src.rename(tgt)
@@ -779,6 +858,28 @@ def _build_cab_data_error(files: List[Path], error_msg: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# GUI config persistence
+# ---------------------------------------------------------------------------
+_GUI_CONFIG_FILE = Path(__file__).with_suffix(".gui.json")
+
+def _load_gui_config() -> dict:
+    try:
+        import json
+        if _GUI_CONFIG_FILE.exists():
+            return json.loads(_GUI_CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def _save_gui_config(data: dict) -> None:
+    try:
+        import json
+        _GUI_CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # GUI
 # ---------------------------------------------------------------------------
 def _run_gui() -> int:
@@ -790,11 +891,13 @@ def _run_gui() -> int:
         print("ERROR: tkinter no disponible.")
         return 1
 
+    _cfg = _load_gui_config()
+
     root_win = tk.Tk()
-    root_win.title("Agente Staging Comprobantes")
+    root_win.title(f"Agente Staging Comprobantes  v{VERSION}")
     root_win.minsize(680, 600)
 
-    var_root      = tk.StringVar()
+    var_root      = tk.StringVar(value=_cfg.get("last_folder", ""))
     var_apply     = tk.BooleanVar(value=False)
     var_max_files = tk.IntVar(value=5)
     var_limit     = tk.IntVar(value=0)
@@ -851,15 +954,48 @@ def _run_gui() -> int:
     ttk.Label(opt_frame, text="Límite grupos (0=todos):").grid(row=1, column=3, sticky="w", padx=(10, 0), pady=(4,0))
     ttk.Spinbox(opt_frame, textvariable=var_limit, from_=0, to=10000, width=7).grid(row=1, column=4, pady=(4,0))
 
+    # --- Progreso ---
+    prog_frame = ttk.Frame(root_win, padding=(10, 0, 10, 0))
+    prog_frame.grid(row=3, column=0, sticky="ew")
+    prog_frame.columnconfigure(0, weight=1)
+
+    var_prog_text = tk.StringVar(value="")
+    ttk.Label(prog_frame, textvariable=var_prog_text, anchor="w").grid(row=0, column=0, sticky="ew")
+    prog_bar = ttk.Progressbar(prog_frame, mode="determinate", maximum=100)
+    prog_bar.grid(row=1, column=0, sticky="ew", pady=(2, 4))
+
+    def _update_progress(done: int, total: int, elapsed: float) -> None:
+        prog_bar["maximum"] = total
+        prog_bar["value"] = done
+        remaining_str = ""
+        if done > 0 and done < total:
+            avg = elapsed / done
+            secs_left = int(avg * (total - done))
+            h, rem = divmod(secs_left, 3600)
+            m, s = divmod(rem, 60)
+            if h > 0:
+                remaining_str = f"  |  Tiempo restante: {h}:{m:02d}:{s:02d}"
+            else:
+                remaining_str = f"  |  Tiempo restante: {m:02d}:{s:02d}"
+        elif done == total and total > 0:
+            remaining_str = "  |  Completado"
+        var_prog_text.set(
+            f"Procesados: {done} / {total}   Restantes: {total - done}{remaining_str}"
+        )
+
+    def _reset_progress() -> None:
+        prog_bar["value"] = 0
+        var_prog_text.set("")
+
     # --- Salida ---
     out_frame = ttk.LabelFrame(root_win, text="Salida", padding=5)
-    out_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=4)
+    out_frame.grid(row=4, column=0, sticky="nsew", padx=10, pady=4)
     txt = scrolledtext.ScrolledText(out_frame, width=85, height=16, state="disabled", wrap="word")
     txt.pack(fill="both", expand=True)
 
     # --- Botones ---
     btn_frame = ttk.Frame(root_win, padding=(10, 0, 10, 10))
-    btn_frame.grid(row=4, column=0, sticky="ew")
+    btn_frame.grid(row=5, column=0, sticky="ew")
     result_code = [0]
 
     def _append(text: str) -> None:
@@ -868,10 +1004,23 @@ def _run_gui() -> int:
         txt.see("end")
         txt.configure(state="disabled")
 
+    _PROGRESS_PREFIX = "\x00PROGRESS:"
+
     class _GuiStream:
         def write(self, s: str) -> None:
-            if s:
-                root_win.after(0, _append, s)
+            if not s:
+                return
+            if s.startswith(_PROGRESS_PREFIX):
+                try:
+                    rest = s[len(_PROGRESS_PREFIX):]
+                    frac, elapsed_str = rest.rsplit(":", 1)
+                    done, total = map(int, frac.split("/"))
+                    elapsed = float(elapsed_str)
+                    root_win.after(0, _update_progress, done, total, elapsed)
+                except Exception:
+                    pass
+                return
+            root_win.after(0, _append, s)
         def flush(self) -> None:
             pass
 
@@ -894,7 +1043,10 @@ def _run_gui() -> int:
         if var_keep_acc.get():
             argv.append("--keep-accents")
 
+        _save_gui_config({"last_folder": root_val})
+
         btn_run.configure(state="disabled")
+        _reset_progress()
         txt.configure(state="normal")
         txt.delete("1.0", "end")
         txt.configure(state="disabled")
@@ -923,7 +1075,7 @@ def _run_gui() -> int:
     ttk.Button(btn_frame, text="Cerrar", command=root_win.destroy).pack(side="left")
 
     root_win.columnconfigure(0, weight=1)
-    root_win.rowconfigure(3, weight=1)
+    root_win.rowconfigure(4, weight=1)
     root_win.mainloop()
     return result_code[0]
 
@@ -950,6 +1102,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     conn_str = _build_conn_str(args.server, args.database, args.user, args.password, args.driver)
 
+    print(f"Agente Staging Comprobantes  v{VERSION}")
+    print()
+
     if args.apply:
         err = _test_connection(conn_str)
         if err:
@@ -968,20 +1123,27 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.limit > 0:
         groups = groups[:args.limit]
 
-    print(f"Grupos a procesar: {len(groups)}")
+    total_groups = len(groups)
+    print(f"Grupos a procesar: {total_groups}")
     print()
 
     ok = skipped = errors = sin_prov = 0
+    processed = 0
+    t_start = time.monotonic()
 
     for group in groups:
         files = list(group["files"])
         source_names = str(group["source_names"])
 
+        print(f"Procesando: {source_names}")
         if len(files) > args.max_files:
             print(f"[SKIP] {source_names}: supera --max-files={args.max_files}")
             _append_log(log_path, status="SKIP", old_name=source_names, new_name=source_names,
                         detail=f"supera max-files={args.max_files}")
             skipped += 1
+            processed += 1
+            elapsed = time.monotonic() - t_start
+            print(f"\x00PROGRESS:{processed}/{total_groups}:{elapsed:.2f}", flush=True)
             continue
 
         status, new_name, detail = _process_group(
@@ -1006,6 +1168,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             ok += 1  # grabado igual, solo sin cuenta contable
         else:
             errors += 1
+
+        processed += 1
+        elapsed = time.monotonic() - t_start
+        print(f"\x00PROGRESS:{processed}/{total_groups}:{elapsed:.2f}", flush=True)
 
     mode = "APLICADO" if args.apply else "SIMULACION"
     print()
