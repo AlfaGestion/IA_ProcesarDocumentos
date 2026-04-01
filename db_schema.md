@@ -10,7 +10,7 @@
 > El nuevo agente de staging usa **exclusivamente** `SERVER-ALFAVB6 / ALFANET`.  
 > Si no se pasan parámetros de conexión, debe pedirlos (GUI o prompt interactivo).
 
-Driver por defecto: `SQL Server Native Client 11.0`
+Driver por defecto: `ODBC Driver 18 for SQL Server`
 
 ---
 
@@ -127,6 +127,45 @@ WHERE c.DESCRIPCION LIKE '%' + @nombre + '%'
 | `ES` | nvarchar(1) | Tipo operación (`C`=Compra, `V`=Venta, etc.) |
 | `Externo` | bit | 1=comprobante externo (de proveedor) |
 | `Talonario` | int | PK compuesta con CODIGO |
+
+---
+
+## TA_CONFIGURACION — Parámetros y configuración del sistema
+
+Tabla genérica de clave/valor usada en todo el sistema (equivalente a un INI extendido).
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `Grupo` | nvarchar(50) | Agrupación lógica de parámetros (puede ser NULL) |
+| `Clave` | nvarchar(100) | Clave del parámetro |
+| `Valor` | nvarchar(500) | Valor principal (texto corto) |
+| `ValorAux` | ntext | Valor extendido (textos largos: prompts, queries, etc.) |
+
+### Helper `_cfg()` en Python (equivalente VB6 `cfg()`)
+
+```python
+_cfg(conn_str, clave, *, grupo=None, valor_filter=None, field="Valor") -> Optional[str]
+```
+
+- Sin parámetros extra → devuelve `Valor` para esa `Clave`
+- `field="ValorAux"` → devuelve el campo ntext
+- `grupo=` y `valor_filter=` → filtros adicionales
+
+### Claves conocidas relevantes para IA
+
+| Grupo | Clave | Valor | ValorAux | Uso |
+|---|---|---|---|---|
+| *(NULL)* | `IA_PROMPT_COMPRAS` | `DEFAULT` | Texto del prompt base | Prompt por defecto para leer facturas |
+| `Compras` | *(código cuenta proveedor)* | *(cualquiera)* | Texto de excepción | Se **agrega** al prompt base para ese proveedor |
+| *(NULL)* | `RutaDocumentosCompras` | Ruta local (ej. `C:\DocCompras`) | — | Carpeta donde se guardan archivos de trabajo (prompts, etc.) |
+
+### Lógica de prompt por proveedor
+
+1. Obtener prompt base: `Clave='IA_PROMPT_COMPRAS'`, `Valor='DEFAULT'` → `ValorAux`
+2. Leer documento con prompt base → extraer CUIT → lookup proveedor → obtener `cuenta_contable`
+3. Buscar excepción: `Grupo='Compras'`, `Clave=cuenta_contable` → `ValorAux`
+4. Si existe excepción → concatenar (base + excepción) → re-leer documento
+5. Guardar prompt combinado en `{RutaDocumentosCompras}/Prompt_{cuenta_contable}.txt`
 
 ---
 
