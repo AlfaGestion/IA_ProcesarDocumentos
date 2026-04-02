@@ -32,12 +32,14 @@ Driver por defecto: `ODBC Driver 18 for SQL Server`
 
 - `nvarchar(15)`, alineado a la izquierda, sin relleno de ceros a la derecha
 - Estructura jerárquica por dígitos:
-  - Dígito 1: rubro (ej. `2` = Pasivo)
+  - Dígito 1: rubro (ej. `2` = Pasivo)  
   - Dígito 2: sub-rubro (ej. `1` = Pasivo Corriente)
   - Dígito 3-4: grupo (ej. `10` = Deudores corrientes / Proveedores)
   - Dígitos 5-11: cuenta título
   - Últimos 4: código individual del proveedor/cliente
 - Ejemplo: `211010001` = Proveedor "Juancito" (Pasivo → Corriente → Proveedores → 0001)
+-- LA CANTIDAD DE DIGITOS DE CADA NIVEL SURGE DE LA TABLA TA_CONFIGURACION CLAVES: 
+   Digitos_Capitulo digitos_subcapitulo digitos_rubro digitos_subrubro digitos_cuenta digitos_subcuenta
 - `MA_CUENTAS.TITULO = 1` → es cuenta título (no imputable), `0` → cuenta imputable
 - `MA_CUENTAS.Libro_Iva_Compras = 1` → aparece en libro IVA compras
 
