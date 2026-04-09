@@ -33,7 +33,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 SUPPORTED_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 INVALID_WIN_CHARS = '<>:"/\\|?*'
-READER_MAX_INPUT_FILES = 5
+READER_MAX_INPUT_FILES = 10
 
 VERSION          = "1.1"
 
