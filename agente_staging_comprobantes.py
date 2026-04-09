@@ -21,7 +21,7 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 try:
     import pyodbc
@@ -33,6 +33,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 SUPPORTED_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 INVALID_WIN_CHARS = '<>:"/\\|?*'
+READER_MAX_INPUT_FILES = 5
 
 VERSION          = "1.1"
 
@@ -41,6 +42,67 @@ DEFAULT_DATABASE = "ALFANET"
 DEFAULT_USER     = "ALFANET"
 DEFAULT_PASSWORD = "ALFANET"
 DEFAULT_DRIVER   = "ODBC Driver 18 for SQL Server"
+
+PRECLASSIFY_PROMPT = r"""
+Vas a analizar 1 documento o 1 pagina de un documento comercial/administrativo.
+Puede ser factura, remito, nota de credito, nota de debito, presupuesto, lista de precios,
+extracto bancario, liquidacion de tarjeta, recibo, orden de pago u otro.
+
+Responde SOLO JSON valido con exactamente este formato:
+{
+  "CAB": {
+    "Proveedor": "",
+    "CUIT": "",
+    "Domicilio": "",
+    "CondicionIVA": "",
+    "TipoComprobante": "",
+    "Letra": "",
+    "PuntoVenta": "",
+    "Numero": "",
+    "Fecha": "",
+    "Vencimiento": "",
+    "Moneda": "",
+    "CAE": "",
+    "VtoCAE": "",
+    "Observaciones": ""
+  },
+  "ROWS": [],
+  "TOTALES": {
+    "Neto gravado": "",
+    "Neto no gravado": "",
+    "Exento": "",
+    "IVA 21%": "",
+    "IVA 10.5%": "",
+    "IVA 27%": "",
+    "Otros": [],
+    "Percepcion IVA": "",
+    "Percepcion IIBB": "",
+    "Percepcion Ganancias": "",
+    "Impuestos internos": "",
+    "Otros impuestos": "",
+    "Total": "",
+    "Total final": "",
+    "Moneda": ""
+  },
+  "meta": {
+    "comprobante_raw": "",
+    "moneda_detectada": "",
+    "observaciones": "",
+    "totales_raw": "",
+    "orden_columnas": []
+  }
+}
+
+Reglas:
+- "TipoComprobante" debe clasificar el documento con el valor mas util posible.
+- Usar valores como: FACTURA, REMITO, NOTA DE CREDITO, NOTA DE DEBITO, PRESUPUESTO,
+  LISTA DE PRECIOS, EXTRACTO BANCARIO, LIQUIDACION TARJETA, RECIBO, ORDEN DE PAGO, OTRO.
+- Si es una factura o comprobante numerado, completar Letra, PuntoVenta y Numero si aparecen.
+- Si el proveedor/emisor aparece claro, ponerlo en Proveedor y CUIT.
+- Si una pagina no trae todos los datos, completar solo lo confiable y dejar el resto vacio.
+- No inventar datos.
+- ROWS debe quedar vacio en esta etapa.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -53,8 +115,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("root", help="Carpeta con archivos a procesar.")
     p.add_argument("--apply",           action="store_true",
                    help="Aplica renombrado real y graba en SQL (sin esto solo simula).")
-    p.add_argument("--max-files",       type=int, default=5,
-                   help="Máx. archivos por grupo multipágina (default: 5).")
+    p.add_argument("--max-files",       type=int, default=10,
+                   help="Máx. archivos por grupo multipágina (default: 10).")
     p.add_argument("--limit",           type=int, default=0,
                    help="Procesa solo los primeros N grupos (0 = sin límite).")
     p.add_argument("--server",          default=DEFAULT_SERVER)
@@ -202,9 +264,38 @@ def _group_key_from_trailing_index(stem: str) -> Optional[Tuple[str, int]]:
     return (base.casefold(), idx) if base and idx >= 1 else None
 
 
+def _group_key_from_copy_suffix(stem: str) -> str:
+    """
+    Normaliza nombres tipo:
+    - archivo
+    - archivo (2)
+    - archivo (15)
+    para poder tratarlos como variantes del mismo documento.
+    """
+    base = re.sub(r"\s*\(\d+\)\s*$", "", stem).strip()
+    return base.casefold()
+
+
+def _strip_copy_suffix(stem: str) -> str:
+    return re.sub(r"\s*\(\d+\)\s*$", "", stem).strip()
+
+
+def _parse_page_hint(stem: str) -> Tuple[str, Optional[int], bool]:
+    raw = stem.strip()
+    no_copy = _strip_copy_suffix(raw)
+    explicit = _group_key_from_page_pattern(no_copy)
+    if explicit:
+        return explicit[0], explicit[1], raw != no_copy
+    trailing = _group_key_from_trailing_index(no_copy)
+    if trailing:
+        return trailing[0], trailing[1], raw != no_copy
+    return no_copy.casefold(), None, raw != no_copy
+
+
 def _group_loose_files(files: List[Path], max_files: int) -> List[Dict]:
     exact_groups: Dict[str, List[Tuple[int, Path]]] = {}
     candidate_groups: Dict[str, List[Tuple[int, Path]]] = {}
+    copy_groups: Dict[str, List[Path]] = {}
     singles: List[Path] = []
 
     for fp in files:
@@ -216,13 +307,13 @@ def _group_loose_files(files: List[Path], max_files: int) -> List[Dict]:
             exact_groups.setdefault(explicit[0], []).append((explicit[1], fp))
             continue
         if fp.suffix.lower() == ".pdf":
-            singles.append(fp)
+            copy_groups.setdefault(_group_key_from_copy_suffix(fp.stem), []).append(fp)
             continue
         trailing = _group_key_from_trailing_index(fp.stem)
         if trailing:
             candidate_groups.setdefault(trailing[0], []).append((trailing[1], fp))
             continue
-        singles.append(fp)
+        copy_groups.setdefault(_group_key_from_copy_suffix(fp.stem), []).append(fp)
 
     groups: List[List[Path]] = []
     used: set = set()
@@ -242,6 +333,19 @@ def _group_loose_files(files: List[Path], max_files: int) -> List[Dict]:
         if 1 < len(ordered) <= max_files and idxs == list(range(1, len(idxs) + 1)):
             groups.append(ordered)
             used.update(ordered)
+        else:
+            singles.extend(ordered)
+
+    for items in copy_groups.values():
+        ordered = sorted(items, key=lambda p: _natural_sort_key(p.name))
+        if len(ordered) > 1:
+            for start in range(0, len(ordered), max_files):
+                chunk = ordered[start:start + max_files]
+                if len(chunk) > 1:
+                    groups.append(chunk)
+                    used.update(chunk)
+                else:
+                    singles.extend(chunk)
         else:
             singles.extend(ordered)
 
@@ -284,6 +388,268 @@ def _load_json_from_reader(reader_script: Path, source_files: List[Path],
         if not json_files:
             raise RuntimeError("el lector terminó OK pero no generó JSON")
         return json.loads(json_files[0].read_text(encoding="utf-8", errors="replace"))
+
+
+def _chunk_paths(files: List[Path], size: int) -> List[List[Path]]:
+    return [files[i:i + size] for i in range(0, len(files), size)]
+
+
+def _row_signature(row: dict) -> Tuple[str, str, str, str, str]:
+    return (
+        str(row.get("Codigo_Articulo") or "").strip(),
+        str(row.get("Descripcion") or "").strip(),
+        str(row.get("Cantidad") or "").strip(),
+        str(row.get("Importe_Neto") or "").strip(),
+        str(row.get("Total") or "").strip(),
+    )
+
+
+def _merge_reader_payloads(datas: List[dict]) -> dict:
+    if not datas:
+        return {"CAB": {}, "ROWS": [], "TOTALES": {}, "meta": {}}
+
+    out = {"CAB": {}, "ROWS": [], "TOTALES": {}, "meta": {}}
+    seen_rows: Set[Tuple[str, str, str, str, str]] = set()
+
+    for data in datas:
+        cab = data.get("CAB") if isinstance(data, dict) else {}
+        rows = data.get("ROWS") if isinstance(data, dict) else []
+        tot = data.get("TOTALES") if isinstance(data, dict) else {}
+        meta = data.get("meta") if isinstance(data, dict) else {}
+
+        cab = cab if isinstance(cab, dict) else {}
+        rows = rows if isinstance(rows, list) else []
+        tot = tot if isinstance(tot, dict) else {}
+        meta = meta if isinstance(meta, dict) else {}
+
+        for k, v in cab.items():
+            if not str(out["CAB"].get(k) or "").strip() and str(v or "").strip():
+                out["CAB"][k] = v
+            elif k not in out["CAB"]:
+                out["CAB"][k] = v
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sig = _row_signature(row)
+            if not any(sig) or sig in seen_rows:
+                continue
+            seen_rows.add(sig)
+            out["ROWS"].append(row)
+
+        for k, v in tot.items():
+            if str(v or "").strip():
+                out["TOTALES"][k] = v
+            elif k not in out["TOTALES"]:
+                out["TOTALES"][k] = v
+
+        if isinstance(meta.get("orden_columnas"), list) and meta.get("orden_columnas") and not out["meta"].get("orden_columnas"):
+            out["meta"]["orden_columnas"] = list(meta["orden_columnas"])
+
+        for k, v in meta.items():
+            if k == "orden_columnas":
+                continue
+            if k == "totales_raw":
+                if str(v or "").strip():
+                    out["meta"][k] = v
+                elif k not in out["meta"]:
+                    out["meta"][k] = v
+                continue
+            if not str(out["meta"].get(k) or "").strip() and str(v or "").strip():
+                out["meta"][k] = v
+            elif k not in out["meta"]:
+                out["meta"][k] = v
+
+    return out
+
+
+def _build_inline_prompt_file(prompt_text: str) -> Path:
+    tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False)
+    try:
+        tmp.write(prompt_text)
+        return Path(tmp.name)
+    finally:
+        tmp.close()
+
+
+def _load_json_from_reader_merged(
+    reader_script: Path,
+    source_files: List[Path],
+    prompt_file: Optional[Path] = None,
+) -> dict:
+    if len(source_files) <= READER_MAX_INPUT_FILES:
+        return _load_json_from_reader(reader_script, source_files, prompt_file)
+
+    payloads = []
+    for chunk in _chunk_paths(source_files, READER_MAX_INPUT_FILES):
+        payloads.append(_load_json_from_reader(reader_script, chunk, prompt_file))
+    return _merge_reader_payloads(payloads)
+
+
+def _preclassify_files(reader_script: Path, files: List[Path]) -> Dict[Path, dict]:
+    prompt_path = _build_inline_prompt_file(PRECLASSIFY_PROMPT)
+    try:
+        classified: Dict[Path, dict] = {}
+        total = len(files)
+        for idx, fp in enumerate(files, 1):
+            print(f"Prelectura {idx}/{total}: {fp.name} ...")
+            try:
+                classified[fp] = _load_json_from_reader_merged(reader_script, [fp], prompt_path)
+            except Exception as exc:
+                classified[fp] = {
+                    "CAB": {"TipoComprobante": "", "Proveedor": "", "CUIT": "", "Letra": "", "PuntoVenta": "", "Numero": ""},
+                    "ROWS": [],
+                    "TOTALES": {},
+                    "meta": {"observaciones": f"prelectura falló: {exc}"},
+                }
+        return classified
+    finally:
+        try:
+            prompt_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _is_groupable_tipo(tipo: str) -> bool:
+    upper = (tipo or "").strip().upper()
+    return upper in {
+        "FACTURA",
+        "REMITO",
+        "NOTA DE CREDITO",
+        "NOTA DE DEBITO",
+        "PRESUPUESTO",
+        "NOTA DE PEDIDO",
+        "RECIBO",
+        "ORDEN DE PAGO",
+    }
+
+
+def _content_group_key(data: dict) -> Optional[Tuple[str, str, str, str, str]]:
+    cab = data.get("CAB") if isinstance(data, dict) else {}
+    cab = cab if isinstance(cab, dict) else {}
+    cab_data = {
+        "Cuenta_Contable": None,
+        "Proveedor_CUIT": _digits_only(_cab_pick(cab, "CUIT", "NUMERO_CUIT")),
+        "Proveedor_Nombre": _cab_pick(cab, "Proveedor", "Nombre"),
+        "TipoComprobante": _infer_tipo_comprobante(cab, data) or None,
+        "Letra": _cab_pick(cab, "Letra", "LETRA")[:1] or None,
+        "PuntoVenta": _digits_only(_cab_pick(cab, "PuntoVenta", "SUCURSAL"))[:4] or None,
+        "Numero": _digits_only(_cab_pick(cab, "Numero", "NUMERO"))[:8] or None,
+    }
+    if not _is_groupable_tipo(str(cab_data["TipoComprobante"] or "")):
+        return None
+    return _normalize_doc_identity(cab_data)
+
+
+def _describe_preclassification(fp: Path, data: dict) -> str:
+    cab = data.get("CAB") if isinstance(data, dict) else {}
+    meta = data.get("meta") if isinstance(data, dict) else {}
+    cab = cab if isinstance(cab, dict) else {}
+    meta = meta if isinstance(meta, dict) else {}
+
+    tipo = _infer_tipo_comprobante(cab, data) or "SIN_TIPO"
+    proveedor = _cab_pick(cab, "Proveedor", "Nombre") or "SIN_PROVEEDOR"
+    cuit = _digits_only(_cab_pick(cab, "CUIT", "NUMERO_CUIT"))
+    letra = _cab_pick(cab, "Letra", "LETRA")[:1]
+    pv = _digits_only(_cab_pick(cab, "PuntoVenta", "SUCURSAL"))[:4]
+    numero = _digits_only(_cab_pick(cab, "Numero", "NUMERO"))[:8]
+    obs = str(meta.get("observaciones") or "").strip()
+
+    parts = [fp.name, f"tipo={tipo}", f"proveedor={proveedor}"]
+    if cuit:
+        parts.append(f"cuit={cuit}")
+    if pv or numero:
+        letra_txt = letra or "?"
+        parts.append(f"cpte={letra_txt} {pv or '????'}-{numero or '????????'}")
+    if obs:
+        parts.append(f"obs={obs[:120]}")
+    return " | ".join(parts)
+
+
+def _group_files_by_content(
+    files: List[Path],
+    reader_script: Path,
+    max_files: int,
+) -> List[Dict]:
+    if not files:
+        return []
+
+    preclassified = _preclassify_files(reader_script, files)
+    grouped_by_key: Dict[Tuple[str, str, str, str, str], List[Path]] = {}
+    unresolved: List[Path] = []
+
+    for fp in files:
+        print(f"  PRE: {_describe_preclassification(fp, preclassified.get(fp, {}))}")
+        doc_key = _content_group_key(preclassified.get(fp, {}))
+        if doc_key is None:
+            unresolved.append(fp)
+            continue
+        grouped_by_key.setdefault(doc_key, []).append(fp)
+
+    groups: List[Dict] = []
+    for paths in grouped_by_key.values():
+        ordered = sorted(paths, key=lambda p: _natural_sort_key(p.name))
+        for chunk in _chunk_paths(ordered, max_files):
+            groups.append({"source_names": ", ".join(p.name for p in chunk), "files": chunk})
+
+    groups.extend(_group_loose_files(unresolved, max_files))
+    return sorted(groups, key=lambda g: _natural_sort_key(str(g["source_names"])))
+
+
+def _pick_primary_and_duplicates(files: List[Path]) -> Tuple[List[Path], List[Path]]:
+    if len(files) <= 1:
+        return list(files), []
+
+    numbered_groups: Dict[str, Dict[int, List[Path]]] = {}
+    for fp in files:
+        base_key, page_idx, _is_copy = _parse_page_hint(fp.stem)
+        if page_idx is None:
+            continue
+        numbered_groups.setdefault(base_key, {}).setdefault(page_idx, []).append(fp)
+
+    best_base = None
+    best_score = None
+    for base_key, pages in numbered_groups.items():
+        unique_pages = len(pages)
+        non_copy = sum(
+            1
+            for variants in pages.values()
+            for p in variants
+            if not _parse_page_hint(p.stem)[2]
+        )
+        score = (unique_pages, non_copy)
+        if unique_pages >= 2 and (best_score is None or score > best_score):
+            best_base = base_key
+            best_score = score
+
+    if best_base is None:
+        return list(files), []
+
+    primary: List[Path] = []
+    duplicates: List[Path] = []
+    selected: Set[Path] = set()
+
+    for page_idx in sorted(numbered_groups[best_base]):
+        variants = sorted(numbered_groups[best_base][page_idx], key=lambda p: (_parse_page_hint(p.stem)[2], _natural_sort_key(p.name)))
+        winner = variants[0]
+        primary.append(winner)
+        selected.add(winner)
+        duplicates.extend(v for v in variants[1:] if v not in selected)
+
+    for fp in files:
+        if fp in selected:
+            continue
+        duplicates.append(fp)
+
+    primary = sorted(primary, key=lambda p: (_parse_page_hint(p.stem)[1] or 0, _natural_sort_key(p.name)))
+    dedup_dups: List[Path] = []
+    seen_dup: Set[Path] = set()
+    for fp in duplicates:
+        if fp in seen_dup:
+            continue
+        seen_dup.add(fp)
+        dedup_dups.append(fp)
+    return primary, dedup_dups
 
 
 # ---------------------------------------------------------------------------
@@ -416,18 +782,18 @@ def _build_file_base_name(
 def _ensure_unique_target(target: Path) -> Path:
     if not target.exists():
         return target
-    base = target.name
+    base = target.stem
+    suffix = target.suffix
     for idx in range(2, 1000):
-        candidate = target.with_name(f"{base} ({idx})")
+        candidate = target.with_name(f"{base} ({idx}){suffix}")
         if not candidate.exists():
             return candidate
     raise RuntimeError(f"no se encontró nombre libre para {target}")
 
 
 def _dest_folder(root: Path, fecha: Optional[dt.datetime] = None) -> Path:
-    """Devuelve root/PROCESADOS/YYYY-MM, creando la carpeta si no existe."""
-    ref = fecha or dt.datetime.now()
-    folder = root / "PROCESADOS" / ref.strftime("%Y-%m")
+    """Devuelve root/PROC_AGENTE_IA, creando la carpeta si no existe."""
+    folder = root / "PROC_AGENTE_IA"
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
@@ -571,22 +937,151 @@ def _lookup_provider(conn_str: str, cuit: str, nombre: str, domicilio: str) -> T
     return None, None, ""
 
 
-def _already_in_staging(conn_str: str, nombre_original: str) -> bool:
-    """Devuelve True si el archivo ya fue grabado en staging y no está en ERROR_LECTURA."""
+def _already_in_staging(conn_str: str, file_names: List[str]) -> Optional[str]:
+    """
+    Devuelve Archivo_NombreRenombrado si alguno de los archivos del grupo ya está
+    en staging con estado distinto a ERROR_LECTURA. Devuelve None si no está.
+    """
     if pyodbc is None:
-        return False
+        return None
     try:
         with pyodbc.connect(conn_str, timeout=10) as conn:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT COUNT(1) FROM IA_Compras_CAB "
-                "WHERE Archivo_NombreOriginal = ? AND Estado <> 'ERROR_LECTURA'",
-                nombre_original,
-            )
-            row = cur.fetchone()
-            return bool(row and row[0] > 0)
+            for name in file_names:
+                cur.execute(
+                    "SELECT TOP 1 Archivo_NombreRenombrado FROM IA_Compras_CAB "
+                    "WHERE Estado <> 'ERROR_LECTURA' AND ("
+                    "  Archivo_NombreOriginal = ? OR "
+                    "  Archivo_NombreOriginal LIKE ? OR "
+                    "  Archivo_NombreOriginal LIKE ? OR "
+                    "  Archivo_NombreOriginal LIKE ?"
+                    ")",
+                    name,
+                    f"{name}, %",
+                    f"%, {name}, %",
+                    f"%, {name}",
+                )
+                row = cur.fetchone()
+                if row:
+                    return str(row[0]).strip() if row[0] else ""
     except Exception:
-        return False
+        pass
+    return None
+
+
+def _normalize_doc_identity(cab_data: dict) -> Optional[Tuple[str, str, str, str, str]]:
+    tipo = str(cab_data.get("TipoComprobante") or "").strip().upper()
+    letra = str(cab_data.get("Letra") or "").strip().upper()
+    pv = _digits_only(str(cab_data.get("PuntoVenta") or "").strip())
+    numero = _digits_only(str(cab_data.get("Numero") or "").strip())
+    if not (tipo and pv and numero):
+        return None
+
+    supplier = (
+        str(cab_data.get("Cuenta_Contable") or "").strip().upper()
+        or _digits_only(str(cab_data.get("Proveedor_CUIT") or "").strip())
+        or re.sub(r"\s+", " ", str(cab_data.get("Proveedor_Nombre") or "").strip()).upper()
+    )
+    if not supplier:
+        return None
+    return supplier, tipo, letra, pv, numero
+
+
+def _doc_identity_text(doc_key: Tuple[str, str, str, str, str]) -> str:
+    supplier, tipo, letra, pv, numero = doc_key
+    letra_txt = f" {letra}" if letra else ""
+    return f"{supplier} | {tipo}{letra_txt} {pv}-{numero}"
+
+
+def _find_duplicate_by_identity(conn_str: str, cab_data: dict) -> Optional[str]:
+    """
+    Busca un comprobante ya presente en staging por identidad de negocio:
+    proveedor + tipo + letra + punto de venta + número.
+    """
+    if pyodbc is None:
+        return None
+
+    doc_key = _normalize_doc_identity(cab_data)
+    if doc_key is None:
+        return None
+
+    supplier, tipo, letra, pv, numero = doc_key
+    where_supplier = ""
+    params: List[str] = [tipo, letra, pv, numero]
+
+    if str(cab_data.get("Cuenta_Contable") or "").strip():
+        where_supplier = "Cuenta_Contable = ?"
+        params.append(str(cab_data["Cuenta_Contable"]).strip())
+    elif _digits_only(str(cab_data.get("Proveedor_CUIT") or "").strip()):
+        where_supplier = "Proveedor_CUIT = ?"
+        params.append(_digits_only(str(cab_data["Proveedor_CUIT"]).strip()))
+    else:
+        where_supplier = "UPPER(LTRIM(RTRIM(ISNULL(Proveedor_Nombre, '')))) = ?"
+        params.append(re.sub(r"\s+", " ", str(cab_data.get("Proveedor_Nombre") or "").strip()).upper())
+
+    sql = (
+        "SELECT TOP 1 Archivo_NombreRenombrado "
+        "FROM IA_Compras_CAB "
+        "WHERE Estado <> 'ERROR_LECTURA' "
+        "  AND UPPER(LTRIM(RTRIM(ISNULL(TipoComprobante, '')))) = ? "
+        "  AND UPPER(LTRIM(RTRIM(ISNULL(Letra, '')))) = ? "
+        "  AND ISNULL(PuntoVenta, '') = ? "
+        "  AND ISNULL(Numero, '') = ? "
+        f"  AND {where_supplier} "
+        "ORDER BY ID DESC"
+    )
+    try:
+        with pyodbc.connect(conn_str, timeout=10) as conn:
+            cur = conn.cursor()
+            cur.execute(sql, *params)
+            row = cur.fetchone()
+            if row:
+                return str(row[0]).strip() if row[0] else ""
+    except Exception:
+        pass
+    return None
+
+
+def _move_group_to_processed(files: List[Path], registered_name: Optional[str]) -> List[str]:
+    dest_dir = _dest_folder(files[0].parent)
+    moved: List[str] = []
+    reg_parts = [p.strip() for p in (registered_name or "").split(",") if p.strip()]
+
+    for fp in files:
+        if not fp.exists():
+            continue
+        tgt_name = None
+        if reg_parts:
+            tgt_name = next(
+                (p for p in reg_parts if Path(p).suffix.lower() == fp.suffix.lower()),
+                None,
+            )
+        tgt = dest_dir / (tgt_name if tgt_name else fp.name)
+        tgt = _ensure_unique_target(tgt)
+        try:
+            fp.rename(tgt)
+            moved.append(tgt.name)
+        except Exception as e:
+            print(f"  AVISO: no se pudo mover {fp.name}: {e}")
+    return moved
+
+
+def _move_files_to_duplicates(files: List[Path]) -> List[str]:
+    if not files:
+        return []
+    dest_dir = _dest_folder(files[0].parent) / "DUPLICADOS"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    moved: List[str] = []
+    for fp in files:
+        if not fp.exists():
+            continue
+        tgt = _ensure_unique_target(dest_dir / fp.name)
+        try:
+            fp.rename(tgt)
+            moved.append(tgt.name)
+        except Exception as e:
+            print(f"  AVISO: no se pudo mover duplicado {fp.name}: {e}")
+    return moved
 
 
 def _insert_staging(conn_str: str, cab_data: dict, det_rows: List[dict]) -> int:
@@ -707,15 +1202,35 @@ def _process_group(
     apply: bool,
     keep_accents: bool,
     max_files: int,
+    seen_doc_keys: Optional[Set[Tuple[str, str, str, str, str]]] = None,
 ) -> Tuple[str, str, str]:
     """Devuelve (status, new_name, detail)."""
 
-    # Ya está en staging y no es error → skip
-    if apply and _already_in_staging(conn_str, files[0].name):
-        return "SKIP", source_names, "ya existe en staging"
+    primary_files, duplicate_files = _pick_primary_and_duplicates(files)
+    if duplicate_files:
+        print(
+            "  Duplicados detectados: "
+            f"usar={', '.join(p.name for p in primary_files)} | "
+            f"duplicados={', '.join(p.name for p in duplicate_files)}"
+        )
+    files = primary_files
+    source_names = ", ".join(f.name for f in files)
+
+    # Ya está en staging y no es error → skip y mover si siguen en origen
+    if apply:
+        registered_name = _already_in_staging(conn_str, [f.name for f in files + duplicate_files])
+        if registered_name is not None:
+            moved = _move_group_to_processed(files, registered_name)
+            dup_moved = _move_files_to_duplicates(duplicate_files)
+            detail = "ya existe en staging"
+            if moved:
+                detail += f" | movido a PROC_AGENTE_IA: {', '.join(moved)}"
+            if dup_moved:
+                detail += f" | duplicados→DUPLICADOS: {', '.join(dup_moved)}"
+            return "SKIP", source_names, detail
 
     def _do_read(prompt_file: Optional[Path] = None) -> dict:
-        data = _load_json_from_reader(reader_script, files, prompt_file)
+        data = _load_json_from_reader_merged(reader_script, files, prompt_file)
         cab_ = data.get("CAB") if isinstance(data, dict) else None
         tot_ = data.get("TOTALES") if isinstance(data, dict) else {}
         rows_ = data.get("ROWS") if isinstance(data, dict) else []
@@ -815,6 +1330,25 @@ def _process_group(
     detail_parts = [f"proveedor={nombre or '?'}", f"match={match_metodo or 'NINGUNO'}"]
     if base_name:
         detail_parts.append(f"renombrar→{new_name}")
+    if duplicate_files:
+        detail_parts.append(f"duplicados={len(duplicate_files)}")
+
+    doc_key = _normalize_doc_identity(cab_data)
+    if doc_key and seen_doc_keys is not None and doc_key in seen_doc_keys:
+        return "SKIP", new_name, f"duplicado en este lote por clave { _doc_identity_text(doc_key) }"
+
+    registered_name = _find_duplicate_by_identity(conn_str, cab_data) if conn_str else None
+    if registered_name is not None:
+        if apply:
+            moved = _move_group_to_processed(files, registered_name)
+            dup_moved = _move_files_to_duplicates(duplicate_files)
+            detail = f"ya existe en staging por clave { _doc_identity_text(doc_key) if doc_key else 'documento' }"
+            if moved:
+                detail += f" | movido a PROC_AGENTE_IA: {', '.join(moved)}"
+            if dup_moved:
+                detail += f" | duplicados→DUPLICADOS: {', '.join(dup_moved)}"
+            return "SKIP", new_name, detail
+        return "SKIP", new_name, f"ya existe en staging por clave { _doc_identity_text(doc_key) if doc_key else 'documento' }"
 
     if apply:
         # Grabar en SQL
@@ -831,6 +1365,21 @@ def _process_group(
                     src.rename(tgt)
             except Exception as e:
                 return "ERROR", new_name, f"grabado en SQL pero renombrado falló: {e}"
+        dup_moved = _move_files_to_duplicates(duplicate_files)
+        if dup_moved:
+            detail_parts.append(f"duplicados→DUPLICADOS: {', '.join(dup_moved)}")
+        # Guardar JSON del lector con el mismo nombre base en la carpeta de procesados
+        if base_name and dest_dir:
+            try:
+                json_path = dest_dir / f"{base_name}.json"
+                json_path.write_text(
+                    json.dumps(data, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                print(f"  AVISO: no se pudo guardar JSON: {e}")
+    elif doc_key and seen_doc_keys is not None:
+        seen_doc_keys.add(doc_key)
 
     status = "OK" if estado == "PENDIENTE" else estado
     return status, new_name, " | ".join(detail_parts)
@@ -899,7 +1448,7 @@ def _run_gui() -> int:
 
     var_root      = tk.StringVar(value=_cfg.get("last_folder", ""))
     var_apply     = tk.BooleanVar(value=False)
-    var_max_files = tk.IntVar(value=5)
+    var_max_files = tk.IntVar(value=10)
     var_limit     = tk.IntVar(value=0)
     var_keep_acc  = tk.BooleanVar(value=False)
     var_server    = tk.StringVar(value=DEFAULT_SERVER)
@@ -1119,7 +1668,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("No se encontraron archivos para procesar.")
         return 0
 
-    groups = _group_loose_files(loose_files, args.max_files)
+    groups = _group_files_by_content(loose_files, reader_script, args.max_files)
     if args.limit > 0:
         groups = groups[:args.limit]
 
@@ -1130,6 +1679,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ok = skipped = errors = sin_prov = 0
     processed = 0
     t_start = time.monotonic()
+    seen_doc_keys: Set[Tuple[str, str, str, str, str]] = set()
 
     for group in groups:
         files = list(group["files"])
@@ -1151,6 +1701,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             apply=args.apply,
             keep_accents=args.keep_accents,
             max_files=args.max_files,
+            seen_doc_keys=seen_doc_keys,
         )
 
         label = f"[{status}] {source_names}"
