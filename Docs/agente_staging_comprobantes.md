@@ -47,7 +47,7 @@ python agente_staging_comprobantes.py <carpeta> [opciones]
 |---|---|---|
 | `root` | Carpeta con los archivos a procesar (obligatorio) | — |
 | `--apply` | Aplica cambios reales: graba en SQL y renombra archivos. Sin este flag es simulación. | desactivado |
-| `--max-files N` | Máximo de archivos que puede tener un grupo multipágina | `5` |
+| `--max-files N` | Máximo de archivos que puede tener un grupo multipágina | `10` |
 | `--limit N` | Procesa solo los primeros N grupos (`0` = sin límite) | `0` |
 | `--server` | Servidor SQL Server | `SERVER-ALFAVB6` |
 | `--database` | Base de datos | `ALFANET` |

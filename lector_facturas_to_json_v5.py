@@ -2,7 +2,7 @@
 r"""
 lector_facturas_to_json_v5.py
 
-- Lee 1 a 5 páginas (JPG/PNG/WEBP o PDF).
+- Lee 1 a 10 páginas (JPG/PNG/WEBP o PDF).
 - Llama a OpenAI y devuelve JSON normalizado.
 - Modo GUI opcional (--gui): ventana simple con estado, barra, tiempo transcurrido y log.
 - Importante: al finalizar OK imprime SOLO la ruta del JSON por stdout (para VB6).
@@ -46,6 +46,9 @@ try:
 except Exception:
     PdfReader = None
     PdfWriter = None
+
+
+MAX_INPUT_FILES = 10
 
 
 # ----------------------------
@@ -960,7 +963,7 @@ def dedupe_rows(rows: List[dict]) -> List[dict]:
 # ----------------------------
 DEFAULT_PROMPT = r"""
 
-Vas a analizar 1 a 5 páginas de una factura / comprobante de compra.
+Vas a analizar 1 a 10 páginas de una factura / comprobante de compra.
 Respondé **SOLO** con JSON válido (sin texto adicional).
 
 El JSON debe tener ESTE formato fijo (NO elimines claves):
@@ -1125,7 +1128,7 @@ Respondé SOLO JSON.
 
 
 PROVIDER_ONLY_PROMPT = r"""
-Vas a analizar 1 a 5 paginas de una factura / comprobante de compra.
+Vas a analizar 1 a 10 paginas de una factura / comprobante de compra.
 Responde SOLO con JSON valido, sin texto adicional.
 
 Objetivo: identificar el proveedor para que otro sistema lo busque en base.
@@ -1270,9 +1273,9 @@ def call_backend_with_hard_timeout(
 def main() -> None:
     parser = argparse.ArgumentParser(
         add_help=True,
-        description="Lector de facturas -> JSON (1 a 5 páginas). Usa backend remoto (IA_BACKEND_URL + credenciales).",
+        description=f"Lector de facturas -> JSON (1 a {MAX_INPUT_FILES} páginas). Usa backend remoto (IA_BACKEND_URL + credenciales).",
     )
-    parser.add_argument("files", nargs="*", help="1 a 5 archivos (imágenes/PDF) en orden de páginas")
+    parser.add_argument("files", nargs="*", help=f"1 a {MAX_INPUT_FILES} archivos (imágenes/PDF) en orden de páginas")
     parser.add_argument(
         "--idcliente",
         type=int,
@@ -1371,7 +1374,7 @@ def main() -> None:
                 )
 
             if not args.files:
-                raise SystemExit("ERROR: Debés pasar 1 a 5 archivos por parámetro.")
+                raise SystemExit(f"ERROR: Debés pasar 1 a {MAX_INPUT_FILES} archivos por parámetro.")
             source_files = list(args.files)
             if args.proveedor and len(source_files) > 1:
                 ignored = len(source_files) - 1
@@ -1379,8 +1382,8 @@ def main() -> None:
                 log(
                     f"Modo proveedor: se procesa solo el primer archivo y se omiten {ignored} archivo(s) adicional(es)."
                 )
-            elif len(source_files) > 5:
-                raise SystemExit("ERROR: Máximo 5 archivos.")
+            elif len(source_files) > MAX_INPUT_FILES:
+                raise SystemExit(f"ERROR: Máximo {MAX_INPUT_FILES} archivos.")
             if args.proveedor:
                 # En modo proveedor priorizamos tiempo de respuesta: 1 archivo, sin tiling ni per-page.
                 args.tile = 1
@@ -1402,8 +1405,8 @@ def main() -> None:
             status("Separando paginas PDF...")
             active_files, temp_files_to_cleanup = _expand_pdf_inputs(source_files, temp_processing_dir)
 
-            if len(active_files) > 5:
-                raise SystemExit("ERROR: Máximo 5 hojas/páginas en total.")
+            if len(active_files) > MAX_INPUT_FILES:
+                raise SystemExit(f"ERROR: Máximo {MAX_INPUT_FILES} hojas/páginas en total.")
 
             if not args.proveedor and len(active_files) > 1 and not args.auto and not args.per_page and args.tile == 1:
                 # a 21-03-2026 Codex - si entran varias paginas, activar auto por defecto para no perder renglones
