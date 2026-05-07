@@ -18,8 +18,31 @@ DEFAULT_IA_CLIENT_SECRET = "cambiar_por_secreto_largo"
 
 
 def backend_enabled() -> bool:
-    base_url = (os.getenv("IA_BACKEND_URL") or "").strip() or DEFAULT_IA_BACKEND_URL
+    transport = _resolve_transport()
+    if transport == "openai":
+        return bool((os.getenv("OPENAI_API_KEY") or "").strip())
+    base_url = _get_backend_base_url()
     return bool(base_url)
+
+
+def _resolve_transport() -> str:
+    raw = (os.getenv("IA_TRANSPORT") or "").strip().lower()
+    if raw in {"backend", "openai"}:
+        return raw
+
+    if (os.getenv("IA_BACKEND_URL") or "").strip():
+        return "backend"
+    if (os.getenv("OPENAI_API_KEY") or "").strip():
+        return "openai"
+    return "backend"
+
+
+def _get_backend_base_url() -> str:
+    return ((os.getenv("IA_BACKEND_URL") or "").strip() or DEFAULT_IA_BACKEND_URL).rstrip("/")
+
+
+def _has_openai_key() -> bool:
+    return bool((os.getenv("OPENAI_API_KEY") or "").strip())
 
 
 def _build_signature(secret: str, timestamp: str, nonce: str, body: str) -> str:
@@ -46,7 +69,18 @@ def call_backend(
     source_filename: Optional[str] = None,
     timeout_seconds: int = 300,
 ) -> str:
-    base_url = ((os.getenv("IA_BACKEND_URL") or "").strip() or DEFAULT_IA_BACKEND_URL).rstrip("/")
+    transport = _resolve_transport()
+
+    if transport == "openai":
+        return _call_openai_direct(
+            content_blocks=content_blocks,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            text=text,
+            timeout_seconds=timeout_seconds,
+        )
+
+    base_url = _get_backend_base_url()
     client_id = (os.getenv("IA_CLIENT_ID") or "").strip() or DEFAULT_IA_CLIENT_ID
     client_secret = (os.getenv("IA_CLIENT_SECRET") or "").strip() or DEFAULT_IA_CLIENT_SECRET
     route = (os.getenv("IA_BACKEND_ROUTE") or "").strip() or DEFAULT_IA_BACKEND_ROUTE
@@ -115,6 +149,14 @@ def call_backend(
         detail = e.read().decode("utf-8", errors="replace")
         raise SystemExit(f"ERROR backend HTTP {e.code}: {detail}") from e
     except Exception as e:
+        if _has_openai_key():
+            return _call_openai_direct(
+                content_blocks=content_blocks,
+                model=model,
+                max_output_tokens=max_output_tokens,
+                text=text,
+                timeout_seconds=timeout_seconds,
+            )
         raise SystemExit(f"ERROR backend no disponible: {e}") from e
 
     try:
@@ -130,5 +172,42 @@ def call_backend(
     out_text = (data.get("output_text") or "").strip()
     if not out_text:
         raise SystemExit("ERROR backend: respuesta vacía del modelo.")
+    return out_text
+
+
+def _call_openai_direct(
+    *,
+    content_blocks: List[Dict[str, Any]],
+    model: str,
+    max_output_tokens: int,
+    text: Optional[Dict[str, Any]] = None,
+    timeout_seconds: int = 300,
+) -> str:
+    try:
+        from openai import OpenAI
+    except Exception as e:
+        raise SystemExit(
+            "ERROR transporte IA: el backend remoto no responde y no se pudo cargar el cliente openai. "
+            "Instalá el paquete 'openai' o configurá IA_BACKEND_URL."
+        ) from e
+
+    if not _has_openai_key():
+        raise SystemExit("ERROR transporte IA: falta OPENAI_API_KEY para usar OpenAI directo.")
+
+    client = OpenAI(timeout=timeout_seconds, max_retries=0)
+    try:
+        response = client.responses.create(
+            model=model,
+            input=[{"role": "user", "content": content_blocks}],
+            max_output_tokens=int(max_output_tokens),
+            text=text,
+        )
+    except Exception as e:
+        raise SystemExit(f"ERROR OpenAI directo: {e}") from e
+
+    out_text = getattr(response, "output_text", "") or ""
+    out_text = out_text.strip()
+    if not out_text:
+        raise SystemExit("ERROR OpenAI directo: respuesta vacía del modelo.")
     return out_text
 
