@@ -1,0 +1,11 @@
+{
+  "sql_server": "SERVER01",
+  "sql_database": "FERNANDEZF2-BCK3101",
+  "sql_user": "FERNANDEZF2-BCK3101",
+  "sql_password": "FERNANDEZF2-BCK3101",
+  "sql_driver": "ODBC Driver 18 for SQL Server",
+  "ia_enabled": true,
+  "ia_task_costos": "COSTOS_ARTICULOS",
+  "max_variation_pct_warning": 30.0,
+  "max_variation_pct_block": 70.0
+}

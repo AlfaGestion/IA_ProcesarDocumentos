@@ -1273,7 +1273,7 @@ def call_backend_with_hard_timeout(
 def main() -> None:
     parser = argparse.ArgumentParser(
         add_help=True,
-        description=f"Lector de facturas -> JSON (1 a {MAX_INPUT_FILES} páginas). Usa backend remoto (IA_BACKEND_URL + credenciales).",
+        description=f"Lector de facturas -> JSON (1 a {MAX_INPUT_FILES} páginas). Usa backend remoto o OpenAI directo segun configuracion.",
     )
     parser.add_argument("files", nargs="*", help=f"1 a {MAX_INPUT_FILES} archivos (imágenes/PDF) en orden de páginas")
     parser.add_argument(
@@ -1369,8 +1369,8 @@ def main() -> None:
 
             if not backend_enabled():
                 raise SystemExit(
-                    "ERROR: No está configurado IA_BACKEND_URL. "
-                    "Definí IA_BACKEND_URL + IA_CLIENT_ID + IA_CLIENT_SECRET para usar backend remoto."
+                    "ERROR: No hay transporte IA configurado. "
+                    "Definí IA_BACKEND_URL + IA_CLIENT_ID + IA_CLIENT_SECRET o bien OPENAI_API_KEY."
                 )
 
             if not args.files:
