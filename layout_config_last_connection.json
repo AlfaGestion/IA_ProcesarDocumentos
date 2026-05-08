@@ -1,0 +1,9 @@
+{
+  "server": "AGSERVER\\ALFANET",
+  "database": "ALFANET",
+  "user": "ALFANET",
+  "password": "ALFANET",
+  "driver": "ODBC Driver 18 for SQL Server",
+  "tesseract_cmd": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+  "last_file": "C:/dev/DocProcesar/FAC MARIN 06-05 2.jpeg"
+}
