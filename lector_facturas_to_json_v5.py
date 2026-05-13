@@ -2,21 +2,82 @@
 r"""
 lector_facturas_to_json_v5.py
 
-- Lee 1 a 10 páginas (JPG/PNG/WEBP o PDF).
-- Llama a OpenAI y devuelve JSON normalizado.
-- Modo GUI opcional (--gui): ventana simple con estado, barra, tiempo transcurrido y log.
-- Importante: al finalizar OK imprime SOLO la ruta del JSON por stdout (para VB6).
-  En error: sale con código != 0 y escribe el mensaje de error en stderr.
+Lee 1 a 10 páginas (JPG/PNG/WEBP o PDF) y genera un .json normalizado con los
+datos de la factura. La extracción puede realizarse por layout (sin IA) o
+delegando al backend remoto de IA. Al finalizar OK imprime SOLO la ruta del
+JSON por stdout (contrato VB6). En error sale con código != 0 y escribe el
+detalle en stderr.
 
 Requisitos:
-  pip install openai python-dotenv
+  pip install python-dotenv
+  pip install pillow          # para --tile y redimensionado de imágenes
+  pip install pypdf           # para PDFs multipágina (--per-page / --auto)
+  pip install pdfplumber pytesseract pymupdf  # para extracción por layout
 
-Uso:
+Uso básico:
   python lector_facturas_to_json_v5.py factura.pdf --outdir E:\temp
   python lector_facturas_to_json_v5.py fac1.jpg fac2.jpg --outdir E:\temp --gui
+  python lector_facturas_to_json_v5.py factura.pdf --layout-file C:\layouts\lyt_42.json
+  python lector_facturas_to_json_v5.py factura.pdf --proveedor
 
 EXE (PyInstaller):
   pyinstaller --onefile --noconsole lector_facturas_to_json_v5.py
+
+Parámetros
+----------
+Archivos de entrada (posicional):
+  files                   1 a 10 archivos JPG/PNG/WEBP/PDF en orden de páginas.
+
+Entrada / salida:
+  --outdir DIR            Carpeta de salida. Default: carpeta TEMP del sistema.
+  --prompt-file FILE      Archivo .txt con prompt personalizado (reemplaza el
+                          prompt por defecto; no aplica con --proveedor).
+
+Estrategia de extracción:
+  --layout-file FILE      Ruta al archivo JSON con el layout del proveedor.
+                          Si la extracción es confiable, guarda el JSON sin
+                          llamar a IA. Si falla o el resultado es insuficiente,
+                          continúa con IA. Incompatible con --proveedor.
+  --proveedor             Modo reducido: extrae solo codigo_proveedor / cuit /
+                          nombre_proveedor. Usa un prompt corto y procesa solo
+                          el primer archivo. Incompatible con --layout-proveedor.
+
+Modelo IA:
+  --model MODEL           Modelo principal. Default: gpt-4.1-mini.
+  --fallback-model MODEL  Modelo de reintento si --model no alcanza o el
+                          resultado parece incompleto. Default: gpt-4.1.
+  --no-fallback           Desactiva el reintento automático con --fallback-model.
+
+Backend / transporte:
+  --idcliente N           Id de cliente (entero) para auditoría en el backend.
+                          Se copia a IA_IDCLIENTE y a IDCLIENTE.
+  --backend-url URL       Override de IA_BACKEND_URL.
+  --backend-route RUTA    Override de IA_BACKEND_ROUTE.
+  --client-id ID          Override de IA_CLIENT_ID.
+  --client-secret SECRET  Override de IA_CLIENT_SECRET.
+  --ia-task TAREA         Override de IA_TASK / opcion.
+
+Procesamiento de páginas:
+  --per-page              Procesa cada archivo/página por separado con IA y
+                          luego unifica las filas. Mejora extracción en tablas
+                          largas o facturas multipágina.
+  --auto                  Activa per-page y ajusta --tile automáticamente según
+                          cantidad de páginas (1 pág → tile 3; 2-3 → tile 4
+                          per-page; 4+ → tile 5 per-page). También se activa
+                          automáticamente cuando se reciben varios archivos sin
+                          --per-page ni --tile explícito.
+  --tile N                Divide cada imagen en N franjas horizontales
+                          solapadas antes de enviarla a IA. Rango: 1 a 6.
+                          Requiere Pillow. Solo afecta imágenes (no PDFs).
+                          Default: 1 (sin división).
+
+Entorno:
+  --env-file FILE         Archivo .env alternativo (útil para pruebas).
+  --no-local-env          No carga el .env que está junto al exe/script.
+
+Interfaz:
+  --gui                   Muestra ventana de progreso con estado, barra y log
+                          (Tkinter). No altera stdout.
 """
 
 from __future__ import annotations
@@ -415,20 +476,26 @@ def _expand_pdf_inputs(file_paths: List[str], temp_dir: str) -> tuple[List[str],
 # Esquema esperado
 # ----------------------------
 CAB_KEYS = [
-    "Proveedor",
-    "CUIT",
-    "Domicilio",
-    "CondicionIVA",
-    "TipoComprobante",
-    "Letra",
-    "PuntoVenta",
-    "Numero",
+    "CUENTA",
+    "Nombre",
+    "DOMICILIO",
+    "LOCALIDAD",
+    "CODIGOPOSTAL",
+    "IDPROVINCIA",
+    "TELEFONO",
+    "DOCUMENTOTIPO",
+    "NUMERO_CUIT",
+    "CONDICIONIVA",
+    "SUCURSAL",
+    "NUMERO",
+    "LETRA",
+    "FechaSubdiario",
+    "CONCEPTO",
     "Fecha",
     "Vencimiento",
-    "Moneda",
-    "CAE",
-    "VtoCAE",
-    "Observaciones",
+    "Vigencia",
+    "FHVToCAI",
+    "NROCAI",
 ]
 
 ROW_KEYS = [
@@ -456,12 +523,15 @@ TOTALES_KEYS = [
     "IVA 21%",
     "IVA 10.5%",
     "IVA 27%",
+    "IVA",
     "Otros",
     "Percepcion IVA",
     "Percepcion IIBB",
     "Percepcion Ganancias",
     "Impuestos internos",
+    "Ing Brutos",
     "Otros impuestos",
+    "Subtotal",
     "Total",
     "Total final",
     "Moneda",
@@ -489,8 +559,7 @@ def normalize_schema(data: dict) -> dict:
     data["TOTALES"] = tot
     data["meta"] = meta
 
-    for k in CAB_KEYS:
-        cab.setdefault(k, "")
+    data["CAB"] = {k: cab.get(k, "") for k in CAB_KEYS}
 
     norm_rows = []
     for r in rows:
@@ -1324,6 +1393,15 @@ def main() -> None:
         action="store_true",
         help="Modo reducido: extrae solo codigo/cuit/nombre del proveedor.",
     )
+    parser.add_argument(
+        "--layout-file",
+        default="",
+        dest="layout_file",
+        metavar="FILE",
+        help="Ruta al archivo JSON con el layout del proveedor. "
+             "Si el layout extrae datos confiables los usa sin llamar a IA. "
+             "Si falla o el resultado es insuficiente, usa IA normalmente.",
+    )
     args = parser.parse_args()
     args.files = _normalize_cli_file_args(list(args.files))
 
@@ -1508,35 +1586,69 @@ def main() -> None:
                     validate_totals_integrity(data_model, tolerance=0.03)
                 return data_model
 
+            # ------------------------------------------------------------------ #
+            # Pre-proceso: extracción por layout (sin IA)
+            # ------------------------------------------------------------------ #
+            data = None
+            layout_file = (args.layout_file or "").strip()
+            if layout_file and not args.proveedor:
+                status("Cargando layout desde archivo...")
+                try:
+                    import json as _json
+                    _layout_data = _json.loads(Path(layout_file).read_text(encoding="utf-8-sig"))
+                    from layout_extractor import try_layout_extraction
+                    data = try_layout_extraction(
+                        _layout_data,
+                        active_files[:1],
+                        log_fn=log,
+                    )
+                except ImportError:
+                    log("Layout: módulo layout_extractor no disponible.")
+                except (OSError, ValueError) as _layout_exc:
+                    log(f"Layout: error al leer archivo ({_layout_exc!r}), se continúa con IA.")
+                except Exception as _layout_exc:
+                    log(f"Layout: error inesperado ({_layout_exc!r}), se continúa con IA.")
+
+                if data is not None:
+                    data = normalize_schema(data)
+                    infer_orden_columnas(data)
+                    adjust_importe_lista_for_bultos(data)
+                    validate_totals_integrity(data, tolerance=0.03)
+                    log("Layout: datos extraídos sin IA.")
+            # ------------------------------------------------------------------ #
+
             fallback_enabled = (not args.no_fallback) and bool(args.fallback_model) and args.fallback_model != args.model
-            log(f"Intento 1 con modelo: {args.model}")
-            try:
-                data = run_extraction(args.model)
-            except SystemExit as first_err:
-                if not fallback_enabled:
-                    raise
-                status("Reintentando con modelo alternativo...")
-                log(f"Intento 1 fallido: {first_err}")
-                log(f"Intento 2 con modelo: {args.fallback_model}")
-                data = run_extraction(args.fallback_model)
+            if data is not None:
+                log("Layout OK: se omite llamada a IA.")
             else:
-                if fallback_enabled:
-                    should_retry, reason = needs_model_fallback(data)
-                    if should_retry:
-                        status("Reintentando con modelo alternativo...")
-                        log(f"Fallback activado: {reason}")
-                        log(f"Intento 2 con modelo: {args.fallback_model}")
-                        try:
-                            retry_data = run_extraction(args.fallback_model)
-                        except SystemExit as retry_err:
-                            log(f"Fallback fallo: {retry_err}. Se conserva resultado original.")
-                        else:
-                            retry_bad, _ = needs_model_fallback(retry_data)
-                            if retry_bad:
-                                log("Fallback ejecutado, pero se conserva resultado original por no mejorar calidad.")
+                log(f"Intento 1 con modelo: {args.model}")
+                try:
+                    data = run_extraction(args.model)
+                except SystemExit as first_err:
+                    if not fallback_enabled:
+                        raise
+                    status("Reintentando con modelo alternativo...")
+                    log(f"Intento 1 fallido: {first_err}")
+                    log(f"Intento 2 con modelo: {args.fallback_model}")
+                    data = run_extraction(args.fallback_model)
+                else:
+                    if fallback_enabled:
+                        should_retry, reason = needs_model_fallback(data)
+                        if should_retry:
+                            status("Reintentando con modelo alternativo...")
+                            log(f"Fallback activado: {reason}")
+                            log(f"Intento 2 con modelo: {args.fallback_model}")
+                            try:
+                                retry_data = run_extraction(args.fallback_model)
+                            except SystemExit as retry_err:
+                                log(f"Fallback fallo: {retry_err}. Se conserva resultado original.")
                             else:
-                                data = retry_data
-                                log("Fallback OK: se usa resultado del modelo alternativo.")
+                                retry_bad, _ = needs_model_fallback(retry_data)
+                                if retry_bad:
+                                    log("Fallback ejecutado, pero se conserva resultado original por no mejorar calidad.")
+                                else:
+                                    data = retry_data
+                                    log("Fallback OK: se usa resultado del modelo alternativo.")
 
             status("Guardando JSON...")
             # Mantener exactamente el nombre original (solo cambia extension a .json)
@@ -1592,10 +1704,18 @@ def main() -> None:
 
     # Contrato VB6: OK -> stdout solo ruta. Error -> stderr y exit != 0
     if result["error"]:
-        print(result["error"], file=sys.stderr)
+        try:
+            print(result["error"], file=sys.stderr)
+            sys.stderr.flush()
+        except Exception:
+            pass
         raise SystemExit(1)
 
-    print(result["out_path"])  # SOLO la ruta
+    try:
+        print(result["out_path"])  # SOLO la ruta — para VB6 con pipe
+        sys.stdout.flush()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

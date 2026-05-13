@@ -1,12 +1,40 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 
+# pdfplumber (usado por layout_extractor) necesita los cmap de pdfminer en runtime
+try:
+    import pdfminer
+    _cmap_src = os.path.join(os.path.dirname(pdfminer.__file__), 'cmap')
+    extra_datas = [(_cmap_src, 'pdfminer/cmap')]
+except ImportError:
+    extra_datas = []
 
 a = Analysis(
     ['lector_facturas_to_json_v5.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=extra_datas,
+    hiddenimports=[
+        # módulos locales importados dinámicamente (no detectados por PyInstaller)
+        'layout_extractor',
+        'ia_backend_transport',
+        # pdfminer (requerido por pdfplumber)
+        'pdfminer',
+        'pdfminer.high_level',
+        'pdfminer.layout',
+        'pdfminer.pdfpage',
+        'pdfminer.pdfinterp',
+        'pdfminer.converter',
+        'pdfminer.pdfdocument',
+        'pdfminer.pdfparser',
+        'pdfminer.cmapdb',
+        'pdfminer.utils',
+        # Pillow
+        'PIL._tkinter_finder',
+        # charset_normalizer (dependencia transitiva)
+        'charset_normalizer',
+        'charset_normalizer.md__mypyc',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -29,7 +57,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
+    console=False,  # Sin ventana negra; VB6 predice la ruta por outdir+stem+".json"
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
