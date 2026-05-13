@@ -24,8 +24,10 @@ import json
 import os
 import queue
 import re
+import shutil
 import sys
 import threading
+import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -76,7 +78,11 @@ from ia_backend_transport import backend_enabled, call_backend
 
 
 APP_TITLE = "Configurar Layout Factura"
-LAST_CONN_FILE = Path(__file__).resolve().parent / "layout_config_last_connection.json"
+LAST_CONN_FILE = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent
+) / "layout_config_last_connection.json"
 DEFAULT_SERVER = "SERVER-ALFAVB6"
 DEFAULT_DATABASE = "ALFANET"
 DEFAULT_USER = "ALFANET"
@@ -157,6 +163,13 @@ PROVIDER_NAME_CANDIDATES = ["NOMBRE", "RAZON_SOCIAL", "RAZONSOCIAL", "DESCRIPCIO
 PROVIDER_CUIT_CANDIDATES = ["CUIT", "NUMERO_CUIT", "NROCUIT", "DOCUMENTO", "NRODOCUMENTO", "NUMERO_DOCUMENTO"]
 PROVIDER_ADDR_CANDIDATES = ["DOMICILIO", "DIRECCION", "CALLE", "LOCALIDAD"]
 DEFAULT_AI_MODEL = "gpt-4.1-mini"
+DEFAULT_DETECTION_MODEL = "gpt-4.1"
+AI_MODELS = [
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4o",
+    "gpt-4o-mini",
+]
 
 
 @dataclass
@@ -441,17 +454,20 @@ class SqlServerClient:
                 + ", ".join(required)
             )
 
+        # VALOR = código de proveedor (la parte después de "IA_LYT_"), para legibilidad
+        codigo = clave.removeprefix("IA_LYT_")
+
         sql_exists = "SELECT 1 FROM TA_CONFIGURACION WHERE Clave = ?"
-        sql_update = "UPDATE TA_CONFIGURACION SET ValorAux = ?, Grupo = ? WHERE Clave = ?"
-        sql_insert = "INSERT INTO TA_CONFIGURACION (Clave, Grupo, ValorAux) VALUES (?, ?, ?)"
+        sql_update = "UPDATE TA_CONFIGURACION SET Valor = ?, ValorAux = ?, Grupo = ? WHERE Clave = ?"
+        sql_insert = "INSERT INTO TA_CONFIGURACION (Clave, Grupo, Valor, ValorAux) VALUES (?, ?, ?, ?)"
 
         with self.connect() as conn:
             cur = conn.cursor()
             exists = cur.execute(sql_exists, clave).fetchone() is not None
             if exists:
-                cur.execute(sql_update, valor_aux, DEFAULT_LAYOUT_GROUP, clave)
+                cur.execute(sql_update, codigo, valor_aux, DEFAULT_LAYOUT_GROUP, clave)
             else:
-                cur.execute(sql_insert, clave, DEFAULT_LAYOUT_GROUP, valor_aux)
+                cur.execute(sql_insert, clave, DEFAULT_LAYOUT_GROUP, codigo, valor_aux)
             conn.commit()
 
     def get_layout_payload(self, clave: str) -> Optional[str]:
@@ -735,43 +751,100 @@ class OCRService:
 
 class LayoutDetectionAIService:
     PROMPT = f"""
-Analizá visualmente este comprobante y proponé zonas de layout para edición humana posterior.
+Analizá visualmente esta FACTURA DE COMPRA argentina y proponé las zonas de layout.
+Respondé SOLO JSON válido, sin texto adicional.
 
-Respondé solo JSON válido con este esquema:
+ESQUEMA DE RESPUESTA:
 {{
   "proveedor": {{"nombre": "", "cuit": ""}},
   "zonas": {{
-    "proveedor": {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
-    "cabecera": {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
-    "cliente": {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
-    "detalle": {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
-    "totales": {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
-    "cae": {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
-    "observaciones": {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}}
+    "proveedor":     {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
+    "cabecera":      {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
+    "cliente":       {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
+    "detalle":       {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
+    "totales":       {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
+    "cae":           {{"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.0}},
+    "observaciones": null
   }},
-  "detalle_columnas": [
-    {{"campo": "Codigo_Articulo", "x1": 0.0, "x2": 0.0}},
-    {{"campo": "Descripcion", "x1": 0.0, "x2": 0.0}},
-    {{"campo": "Cantidad", "x1": 0.0, "x2": 0.0}},
-    {{"campo": "Importe_Neto", "x1": 0.0, "x2": 0.0}},
-    {{"campo": "Total", "x1": 0.0, "x2": 0.0}}
-  ],
+  "detalle_columnas": [],
   "comentario": ""
 }}
 
-Reglas:
-- Las coordenadas deben ser relativas entre 0 y 1 respecto del ancho/alto completos de la imagen.
-- Si una zona no se puede identificar con razonable confianza, devolvela como null.
-- "proveedor" = emisor de la factura.
-- "cabecera" = tipo, letra, punto de venta, número, fecha y datos generales.
-- "cliente" = receptor/comprador.
-- "detalle" = tabla de ítems.
-- "totales" = subtotales, neto, IVA, total, percepciones.
-- "cae" = bloque del CAE y vencimiento.
-- "observaciones" = notas, leyendas o textos adicionales.
-- En detalle_columnas, devolvé solo columnas que identifiques razonablemente.
-- Los x1/x2 de detalle_columnas también son relativos al ancho total de la imagen.
-- No expliques nada fuera del JSON.
+═══════════════════════════════
+DEFINICIÓN DE ZONAS
+═══════════════════════════════
+
+PROVEEDOR (emisor = quien VENDIÓ y emitió la factura):
+  - Es SIEMPRE el que aparece en el encabezado superior con su logo, nombre/razón social, domicilio, CUIT y condición de IVA.
+  - En Argentina, la empresa que imprimió la factura es el proveedor. Si ves "BEBIDAS DEL LAGO S.A." grande arriba → eso es el proveedor.
+  - NO confundir con el bloque "Cliente:" o "Sr.:" que aparece MÁS ABAJO: ese es el receptor/comprador.
+  - Incluir toda la zona con nombre, domicilio, CUIT y condición IVA del EMISOR.
+
+CABECERA (datos del comprobante):
+  - Tipo de comprobante (FACTURA / REMITO), letra (A/B/C), punto de venta y número.
+  - Fecha de emisión, código de barras o QR si está en esa área.
+  - Suele estar en la parte superior derecha o en una caja destacada.
+  - NO incluir los datos del proveedor ni del cliente.
+
+CLIENTE (receptor = quien COMPRÓ):
+  - Bloque con razón social, CUIT/documento, domicilio y condición IVA del comprador.
+  - Suele ir precedido de "Cliente:", "Sr.:", "Señores:", "Comprador:", "A:", etc.
+  - Siempre está DEBAJO del bloque del proveedor.
+  - Si hay datos de vendedor, zona, reparto o condición de pago junto al cliente, incluilos.
+
+DETALLE (tabla de ítems):
+  - Tabla con renglones de artículos/productos.
+  - Debe comenzar DESDE la fila de encabezados de columna (CODIGO, DESCRIPCION, etc.)
+  - hasta el último renglón de datos, SIN incluir los totales.
+
+TOTALES (pie de la factura):
+  - Línea o bloque con subtotales, neto gravado, IVA 21%, IVA 10.5%, percepciones, IIBB, total final.
+  - Suele estar en una franja horizontal justo después del detalle.
+
+CAE / CAI:
+  - Número de CAE o CAI y su vencimiento. Suele estar al pie, debajo de los totales.
+  - Incluir el texto "CAE:", "CAI:", "VTO CAE:", código de barras del CAE si está agrupado.
+
+OBSERVACIONES:
+  - Solo si hay un bloque claro de notas, leyendas o instrucciones de pago SEPARADO de las zonas anteriores.
+  - Si no existe ese bloque claramente diferenciado, devolver null.
+
+═══════════════════════════════
+REGLAS DE COORDENADAS
+═══════════════════════════════
+- Todas las coordenadas son relativas al tamaño total de la imagen (valores entre 0.0 y 1.0).
+  x1/y1 = esquina superior izquierda, x2/y2 = esquina inferior derecha.
+- Las zonas NO deben solaparse entre sí.
+- Cada zona debe quedar contenida dentro de los límites de su bloque real visible.
+- Si una zona no existe o no se puede identificar con confianza, devolvela como null.
+
+═══════════════════════════════
+COLUMNAS DEL DETALLE
+═══════════════════════════════
+Para cada columna visible en la tabla de detalle, mapeala al campo interno más adecuado:
+
+  Codigo_Articulo  → código, cód., art., artículo, ítem
+  Descripcion      → descripción, detalle, producto, artículo (texto)
+  Cantidad         → cant., cantidad, unidades, qty
+  Bl/Pq            → bultos, blt., bl., paq., cajas, fardos, pq.
+  Importe_Lista    → precio, p.unit., precio unit., precio lista, valor unit.
+  % Dto1           → desc.%, dto1, bonif.%, bon.%, descuento 1
+  % Dto2           → dto2, descuento 2, bonif. 2
+  Importe_Neto     → neto, imp.neto, precio neto, p.neto (precio unitario luego de descuentos)
+  Total            → total, subtotal, importe, imp. total (total por renglón = precio x cantidad)
+  IVA              → iva%, alíc. iva, tasa iva
+  Impuestos internos → imp.int., i.int., imp.internos, ii.ii.
+  Tot.Imp.Int      → tot.imp.int., total imp.int.
+  AuxNroLote       → lote, nro.lote, lot.
+  AuxNroSerie      → serie, nro.serie
+  Moneda           → moneda, divisa
+
+- Devolvé SOLO las columnas que puedas identificar con razonable certeza.
+- Los x1/x2 de columnas son relativos al ancho TOTAL de la imagen (no al ancho del detalle).
+- El orden en el array debe ser de izquierda a derecha.
+- No inventes columnas que no estén visibles.
+
+En "comentario" incluí observaciones relevantes (ej: zona observaciones no identificada, columnas ambiguas, etc.).
 """.strip()
 
     def __init__(self, model: str = DEFAULT_AI_MODEL):
@@ -990,7 +1063,7 @@ class LayoutEditorApp:
         self.var_password = tk.StringVar(value=config.password)
         self.var_driver = tk.StringVar(value=config.driver)
         self.var_tesseract_cmd = tk.StringVar(value=config.tesseract_cmd)
-        self.var_ai_model = tk.StringVar(value=DEFAULT_AI_MODEL)
+        self.var_ai_model = tk.StringVar(value=DEFAULT_DETECTION_MODEL)
         self.var_prompt_file = tk.StringVar(value="")
         self.var_file = tk.StringVar(value=config.last_file)
         self.var_page = tk.IntVar(value=1)
@@ -1015,8 +1088,9 @@ class LayoutEditorApp:
         self.root.columnconfigure(1, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        left = ttk.Frame(self.root, padding=10)
-        left.grid(row=0, column=0, sticky="nsw")
+        left = ttk.Frame(self.root, padding=10, width=390)
+        left.grid(row=0, column=0, sticky="nsew")
+        left.grid_propagate(False)
         right = ttk.Frame(self.root, padding=(0, 10, 10, 10))
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(0, weight=1)
@@ -1033,7 +1107,7 @@ class LayoutEditorApp:
         header.columnconfigure(0, weight=1)
         ttk.Label(
             header,
-            text="1. Documento  2. Zonas  3. Detalle  4. Proveedor  5. Guardar",
+            text="1. Documento  2. Zonas  3. Detalle  4. Proveedor  5. Guardar  6. Prueba",
             anchor="w",
         ).grid(row=0, column=0, sticky="ew")
         nav = ttk.Frame(header)
@@ -1057,18 +1131,21 @@ class LayoutEditorApp:
         tab_detalle = ttk.Frame(notebook, padding=10)
         tab_proveedor = ttk.Frame(notebook, padding=10)
         tab_guardar = ttk.Frame(notebook, padding=10)
+        tab_prueba = ttk.Frame(notebook, padding=10)
 
         notebook.add(tab_documento, text="1. Documento")
         notebook.add(tab_zonas, text="2. Zonas")
         notebook.add(tab_detalle, text="3. Detalle")
         notebook.add(tab_proveedor, text="4. Proveedor")
         notebook.add(tab_guardar, text="5. Guardar")
+        notebook.add(tab_prueba, text="6. Prueba")
 
         self._build_tab_documento(tab_documento)
         self._build_tab_zonas(tab_zonas)
         self._build_tab_detalle(tab_detalle)
         self._build_tab_proveedor(tab_proveedor)
         self._build_tab_guardar(tab_guardar)
+        self._build_tab_prueba(tab_prueba)
 
     def _build_tab_documento(self, parent: Any) -> None:
         parent.columnconfigure(1, weight=1)
@@ -1087,7 +1164,9 @@ class LayoutEditorApp:
         ttk.Button(parent, text="...", width=3, command=self.on_pick_prompt_file).grid(row=2, column=2, pady=(8, 0))
 
         ttk.Label(parent, text="Modelo IA:").grid(row=3, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(parent, textvariable=self.var_ai_model).grid(row=3, column=1, sticky="ew", padx=(6, 4), pady=(8, 0))
+        ttk.Combobox(
+            parent, textvariable=self.var_ai_model, values=AI_MODELS, state="readonly", width=20
+        ).grid(row=3, column=1, sticky="w", padx=(6, 4), pady=(8, 0))
         ttk.Button(parent, text="Detectar zonas IA", command=self.on_detect_layout_with_ai).grid(row=3, column=2, pady=(8, 0))
 
         note = ttk.Label(
@@ -1256,6 +1335,111 @@ class LayoutEditorApp:
         self.summary_text.configure(state="disabled")
         ttk.Button(parent, text="Guardar layout", command=self.on_save_layout).grid(row=2, column=0, sticky="e", pady=(10, 0))
 
+    def _build_tab_prueba(self, parent: Any) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(2, weight=1)
+
+        info = ttk.Label(
+            parent,
+            text="Procesa el comprobante abierto usando el layout actual (sin guardar en SQL) y muestra el JSON resultante.",
+            foreground="#4B5563",
+            wraplength=520,
+            justify="left",
+        )
+        info.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+
+        btn_frame = ttk.Frame(parent)
+        btn_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
+        ttk.Button(btn_frame, text="Procesar con layout", command=self.on_run_test_layout).pack(side="left")
+        ttk.Button(btn_frame, text="Procesar con IA", command=self.on_run_test_ia).pack(side="left", padx=(8, 0))
+        self.var_prueba_status = tk.StringVar(value="")
+        ttk.Label(btn_frame, textvariable=self.var_prueba_status, foreground="#6B7280").pack(side="left", padx=(12, 0))
+
+        self.prueba_text = tk.Text(parent, wrap="none", font=("Consolas", 9))
+        self.prueba_text.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
+        sb_y = ttk.Scrollbar(parent, orient="vertical", command=self.prueba_text.yview)
+        sb_y.grid(row=2, column=1, sticky="ns", pady=(8, 0))
+        sb_x = ttk.Scrollbar(parent, orient="horizontal", command=self.prueba_text.xview)
+        sb_x.grid(row=3, column=0, sticky="ew")
+        self.prueba_text.configure(yscrollcommand=sb_y.set, xscrollcommand=sb_x.set)
+
+    def _run_v5(self, extra_args: List[str]) -> None:
+        """Ejecuta el v5 en un hilo y muestra el JSON resultante."""
+        import subprocess
+        import tempfile
+
+        doc_path = self.document.path if self.document else ""
+        if not doc_path or not Path(doc_path).is_file():
+            messagebox.showwarning("Sin documento", "Abrí un comprobante primero.")
+            return
+
+        self.var_prueba_status.set("Procesando...")
+        self.prueba_text.configure(state="normal")
+        self.prueba_text.delete("1.0", "end")
+        self.prueba_text.configure(state="disabled")
+
+        def _worker():
+            try:
+                base = app_dir()
+                exe = base / "lector_facturas_to_json_v5.exe"
+                script = base / "lector_facturas_to_json_v5.py"
+                if exe.is_file():
+                    cmd = [str(exe)]
+                elif script.is_file():
+                    cmd = [sys.executable, str(script)]
+                else:
+                    self.root.after(0, lambda: self._prueba_set_result("No se encontró lector_facturas_to_json_v5.exe ni .py junto al configurador."))
+                    return
+
+                outdir = tempfile.mkdtemp(prefix="lyt_prueba_")
+                result = subprocess.run(
+                    cmd + [doc_path] + extra_args + ["--outdir", outdir],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=120,
+                )
+                json_path = result.stdout.strip()
+                if json_path and Path(json_path).is_file():
+                    content = Path(json_path).read_text(encoding="utf-8-sig")
+                    try:
+                        parsed = json.loads(content)
+                        content = json.dumps(parsed, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
+                    self.root.after(0, lambda c=content: self._prueba_set_result(c))
+                else:
+                    err = result.stderr.strip() or result.stdout.strip() or "Sin salida."
+                    self.root.after(0, lambda e=err: self._prueba_set_result(f"ERROR:\n{e}"))
+            except subprocess.TimeoutExpired:
+                self.root.after(0, lambda: self._prueba_set_result("Tiempo de espera agotado (120s)."))
+            except Exception as ex:
+                self.root.after(0, lambda e=str(ex): self._prueba_set_result(f"Error inesperado:\n{e}"))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _prueba_set_result(self, text: str) -> None:
+        self.prueba_text.configure(state="normal")
+        self.prueba_text.delete("1.0", "end")
+        self.prueba_text.insert("end", text)
+        self.prueba_text.configure(state="disabled")
+        self.var_prueba_status.set("")
+
+    def on_run_test_layout(self) -> None:
+        import tempfile
+        try:
+            layout = self.build_layout()
+        except RuntimeError as e:
+            messagebox.showwarning("Layout incompleto", str(e))
+            return
+        tmp = Path(tempfile.mktemp(suffix=".json", prefix="lyt_test_"))
+        tmp.write_text(json.dumps(layout, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._run_v5(["--layout-file", str(tmp)])
+
+    def on_run_test_ia(self) -> None:
+        self._run_v5([])
+
     def _build_canvas_panel(self, parent: Any) -> None:
         canvas_frame = ttk.LabelFrame(parent, text="Vista del comprobante", padding=8)
         canvas_frame.grid(row=0, column=0, sticky="nsew")
@@ -1345,8 +1529,8 @@ class LayoutEditorApp:
             self.selected_zone_type = zone_type
             if hasattr(self, "zone_help_label"):
                 self.zone_help_label.configure(text=ZONE_HELP.get(zone_type, ""))
-            if zone_type in self.zones:
-                self._redraw_canvas()
+            # Siempre redibujar: si la zona no está definida, el canvas queda sin highlight
+            self._redraw_canvas()
 
     def on_column_field_selected(self, _event: Any = None) -> None:
         selection = self.column_field_listbox.curselection()
@@ -1356,8 +1540,8 @@ class LayoutEditorApp:
             self.selected_column_field = field_name
             if hasattr(self, "column_help_label"):
                 self.column_help_label.configure(text=DETAIL_FIELD_HELP.get(field_name, ""))
-            if any(c.get("campo") == field_name for c in self.detail_columns):
-                self._redraw_canvas()
+            # Siempre redibujar: si el campo no está definido, el canvas queda sin highlight
+            self._redraw_canvas()
 
     def on_zoom_in(self) -> None:
         if self.document.image_original is None:
@@ -1465,17 +1649,16 @@ class LayoutEditorApp:
         win.title("Configuración")
         win.transient(self.root)
         win.grab_set()
-        win.geometry("760x280")
-        win.minsize(680, 240)
+        win.geometry("780x320")
+        win.minsize(680, 280)
         win.columnconfigure(1, weight=1)
 
         fields = [
-            ("Servidor", self.var_server, False),
-            ("Base", self.var_database, False),
-            ("Usuario", self.var_user, False),
-            ("Password", self.var_password, True),
-            ("Driver", self.var_driver, False),
-            ("Tesseract EXE", self.var_tesseract_cmd, False),
+            ("Servidor",      self.var_server,       False),
+            ("Base",          self.var_database,     False),
+            ("Usuario",       self.var_user,         False),
+            ("Password",      self.var_password,     True),
+            ("Driver",        self.var_driver,       False),
         ]
         for i, (label, var, is_secret) in enumerate(fields):
             ttk.Label(win, text=f"{label}:").grid(row=i, column=0, sticky="w", padx=10, pady=(10 if i == 0 else 6, 0))
@@ -1483,8 +1666,53 @@ class LayoutEditorApp:
                 row=i, column=1, sticky="ew", padx=(6, 10), pady=(10 if i == 0 else 6, 0)
             )
 
+        # Tesseract EXE — fila con Entry + botón Buscar + auto-detect
+        tess_row = len(fields)
+        ttk.Label(win, text="Tesseract EXE:").grid(row=tess_row, column=0, sticky="w", padx=10, pady=(6, 0))
+        tess_frame = ttk.Frame(win)
+        tess_frame.grid(row=tess_row, column=1, sticky="ew", padx=(6, 10), pady=(6, 0))
+        tess_frame.columnconfigure(0, weight=1)
+        ttk.Entry(tess_frame, textvariable=self.var_tesseract_cmd).grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            tess_frame, text="Buscar...",
+            command=lambda: self.var_tesseract_cmd.set(
+                filedialog.askopenfilename(
+                    title="Seleccionar tesseract.exe",
+                    filetypes=[("Ejecutable", "tesseract.exe"), ("Todos", "*.*")],
+                    initialdir=r"C:\Program Files\Tesseract-OCR",
+                ) or self.var_tesseract_cmd.get()
+            ),
+        ).grid(row=0, column=1, padx=(4, 0))
+
+        # Auto-detectar Tesseract si el campo está vacío
+        if not self.var_tesseract_cmd.get().strip():
+            detected = _find_tesseract_exe()
+            if detected:
+                self.var_tesseract_cmd.set(detected)
+
+        # Advertencia si el ODBC Driver configurado no está instalado
+        if pyodbc is not None:
+            try:
+                driver_name = self.var_driver.get().strip() or DEFAULT_DRIVER
+                if driver_name not in pyodbc.drivers():
+                    warn_row = tess_row + 1
+                    warn_frame = ttk.Frame(win)
+                    warn_frame.grid(row=warn_row, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 0))
+                    ttk.Label(
+                        warn_frame,
+                        text=f"⚠  Driver '{driver_name}' no encontrado.",
+                        foreground="#c0392b",
+                        font=("Segoe UI", 9, "bold"),
+                    ).pack(side="left")
+                    ttk.Button(
+                        warn_frame, text="Descargar ODBC Driver 18",
+                        command=lambda: webbrowser.open("https://aka.ms/odbc18"),
+                    ).pack(side="left", padx=(8, 0))
+            except Exception:
+                pass
+
         btns = ttk.Frame(win, padding=10)
-        btns.grid(row=len(fields), column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        btns.grid(row=tess_row + 2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         ttk.Button(btns, text="Probar conexión", command=self.on_test_connection).pack(side="left")
         ttk.Button(btns, text="Guardar configuración", command=self.on_save_connection).pack(side="left", padx=(6, 0))
         ttk.Button(btns, text="Cerrar", command=win.destroy).pack(side="right")
@@ -2335,30 +2563,137 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 
 def build_app_config(args: argparse.Namespace) -> AppConfig:
-    cfg = load_last_connection()
-    if args.server:
-        cfg.server = args.server
-    if args.database:
-        cfg.database = args.database
-    if args.user:
-        cfg.user = args.user
-    if args.password:
-        cfg.password = args.password
-    if args.driver:
-        cfg.driver = args.driver
+    cli_conn = args.server or args.database or args.user or args.password
+    cfg = AppConfig() if cli_conn else load_last_connection()
+    cfg.server   = args.server   or cfg.server   or DEFAULT_SERVER
+    cfg.database = args.database or cfg.database or DEFAULT_DATABASE
+    cfg.user     = args.user     or cfg.user     or DEFAULT_USER
+    cfg.password = args.password or cfg.password or DEFAULT_PASSWORD
+    cfg.driver   = args.driver   or cfg.driver   or DEFAULT_DRIVER
     if args.tesseract_cmd:
         cfg.tesseract_cmd = args.tesseract_cmd
-    if not cfg.server:
-        cfg.server = DEFAULT_SERVER
-    if not cfg.database:
-        cfg.database = DEFAULT_DATABASE
-    if not cfg.user:
-        cfg.user = DEFAULT_USER
-    if not cfg.password:
-        cfg.password = DEFAULT_PASSWORD
-    if not cfg.driver:
-        cfg.driver = DEFAULT_DRIVER
     return cfg
+
+
+def _find_tesseract_exe() -> str:
+    """Busca tesseract.exe en PATH y en ubicaciones estándar de Windows."""
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    candidates = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    ]
+    for c in candidates:
+        if Path(c).exists():
+            return c
+    return ""
+
+
+_TESSERACT_COMMON_PATHS = [
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+]
+
+
+def _find_tesseract_exe(configured_cmd: str = "") -> str:
+    """Devuelve la ruta al exe de Tesseract o '' si no se encuentra."""
+    candidates = []
+    if configured_cmd:
+        candidates.append(configured_cmd)
+    if shutil.which("tesseract"):
+        candidates.append(shutil.which("tesseract"))
+    candidates.extend(_TESSERACT_COMMON_PATHS)
+    for p in candidates:
+        if p and Path(p).is_file():
+            return p
+    return ""
+
+
+def _check_optional_deps(parent: "tk.Tk", cfg: "AppConfig | None" = None) -> None:
+    """Detecta dependencias opcionales faltantes y ofrece descargarlas."""
+    missing = []
+
+    # Tesseract OCR
+    tesseract_ok = False
+    configured_cmd = (cfg.tesseract_cmd if cfg else "") or ""
+    exe = _find_tesseract_exe(configured_cmd)
+    if exe and pytesseract is not None:
+        try:
+            pytesseract.pytesseract.tesseract_cmd = exe
+            pytesseract.get_tesseract_version()
+            tesseract_ok = True
+        except Exception:
+            pass
+    if not tesseract_ok:
+        missing.append({
+            "name": "Tesseract OCR",
+            "desc": 'Necesario para "Probar OCR zona proveedor".',
+            "url": "https://github.com/UB-Mannheim/tesseract/wiki",
+            "btn": "Descargar Tesseract",
+        })
+
+    # ODBC Driver para SQL Server — verificar el driver exacto configurado por defecto
+    odbc_ok = False
+    if pyodbc is not None:
+        try:
+            odbc_ok = DEFAULT_DRIVER in pyodbc.drivers()
+        except Exception:
+            pass
+    if not odbc_ok:
+        missing.append({
+            "name": DEFAULT_DRIVER,
+            "desc": "Necesario para conectar a la base de datos ALFANET.",
+            "url": "https://aka.ms/odbc18",
+            "btn": "Descargar ODBC Driver 18",
+        })
+
+    if not missing:
+        return
+
+    dlg = tk.Toplevel(parent)
+    dlg.title("Dependencias faltantes")
+    dlg.resizable(False, False)
+    dlg.grab_set()
+    dlg.focus_set()
+
+    # Centrar respecto al padre
+    parent.update_idletasks()
+    pw, ph = parent.winfo_width(), parent.winfo_height()
+    px, py = parent.winfo_x(), parent.winfo_y()
+    dlg.update_idletasks()
+    dw, dh = 480, 80 + len(missing) * 72
+    dlg.geometry(f"{dw}x{dh}+{px + (pw - dw)//2}+{py + (ph - dh)//2}")
+
+    ttk.Label(
+        dlg,
+        text="Se detectaron dependencias opcionales no instaladas:",
+        font=("Segoe UI", 10, "bold"),
+    ).grid(row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(14, 8))
+
+    for i, dep in enumerate(missing):
+        row_base = 1 + i * 3
+        ttk.Label(dlg, text=f"• {dep['name']}", font=("Segoe UI", 9, "bold")).grid(
+            row=row_base, column=0, sticky="w", padx=20, pady=(6, 0)
+        )
+        ttk.Label(dlg, text=dep["desc"], foreground="#555555").grid(
+            row=row_base + 1, column=0, sticky="w", padx=32, pady=(0, 2)
+        )
+        ttk.Button(
+            dlg,
+            text=dep["btn"],
+            command=lambda url=dep["url"]: webbrowser.open(url),
+        ).grid(row=row_base, column=1, rowspan=2, padx=(8, 16), pady=4, sticky="ew")
+
+    sep_row = 1 + len(missing) * 3
+    ttk.Separator(dlg, orient="horizontal").grid(
+        row=sep_row, column=0, columnspan=2, sticky="ew", padx=12, pady=10
+    )
+    ttk.Button(dlg, text="Continuar de todos modos", command=dlg.destroy).grid(
+        row=sep_row + 1, column=0, columnspan=2, pady=(0, 14)
+    )
+
+    parent.wait_window(dlg)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -2372,6 +2707,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     cfg = build_app_config(args)
     root = tk.Tk()
+    root.state("zoomed")
+    _check_optional_deps(root, cfg)
     LayoutEditorApp(root, cfg)
     root.mainloop()
     return 0

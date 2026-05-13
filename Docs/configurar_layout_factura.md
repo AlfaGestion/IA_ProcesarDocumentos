@@ -2,7 +2,7 @@
 
 **Script:** `configurar_layout_factura.py`  
 **Ejecutable opcional:** `configurar_layout_factura.exe`  
-**Versión:** 1.0  
+**Versión:** 1.1  
 **Requiere:** Python 3.10+, `tkinter`, `pillow`, `pyodbc`.  
 **Opcionales:** `pdfplumber`, `pymupdf`, `pytesseract`, Tesseract OCR para OCR sobre imágenes/PDF escaneados.
 
@@ -26,6 +26,8 @@ El layout se graba como JSON en:
 - `Clave = IA_LYT_<codigo_proveedor>`
 - `Grupo = IA_COMPRAS`
 - `ValorAux = <json completo>`
+
+Para usarlo en el lector (`lector_facturas_to_json_v5`), VB6 lee el `ValorAux` de SQL y lo escribe a un archivo temporal que pasa con `--layout-file`. El lector no se conecta a SQL; solo lee el archivo.
 
 ---
 
@@ -91,14 +93,12 @@ configurar_layout_factura.exe
 | `--driver` | Driver ODBC | `ODBC Driver 18 for SQL Server` |
 | `--tesseract-cmd` | Ruta completa de `tesseract.exe` | vacío |
 
-Si no se envían parámetros:
+Comportamiento:
 
-1. La herramienta intenta usar el último valor guardado.
-2. Si no hay archivo de memoria, usa los valores por defecto.
+- Si se pasa **alguno** de `--server`, `--database`, `--user` o `--password`: **ignora completamente** la conexión guardada y usa solo los valores recibidos por CLI (completando con defaults lo que falte). Útil para invocación desde VB6 o scripts automatizados.
+- Si **no** se pasa ninguno: carga la última conexión guardada. Si no existe, usa los defaults.
 
-La última conexión usada se guarda en:
-
-`layout_config_last_connection.json`
+La última conexión usada se guarda en `layout_config_last_connection.json`, en la **misma carpeta del exe/script**. Cuando corre como exe compilado, el archivo queda en `dist\` junto al ejecutable (no en el directorio temporal de PyInstaller).
 
 ---
 
@@ -108,9 +108,10 @@ La interfaz contiene estas áreas:
 
 - **Botón Gestionar layouts...** para listar, cargar y eliminar layouts guardados
 - **Botón Configuración...** para SQL Server y Tesseract
-- **Pestañas:** 1. Documento / 2. Zonas / 3. Detalle / 4. Proveedor / 5. Guardar
+- **Pestañas:** 1. Documento / 2. Zonas / 3. Detalle / 4. Proveedor / 5. Guardar / 6. Prueba
 - **Botones Anterior / Siguiente** al pie del panel izquierdo para navegar entre pestañas
 - **Vista del comprobante** a la derecha con controles de zoom
+- La aplicación arranca **maximizada** automáticamente.
 
 En las solapas **Zonas** y **Detalle**:
 
@@ -124,6 +125,21 @@ Sobre la imagen hay controles de zoom `+`, `-` y `Ajustar` para facilitar la mar
 
 ---
 
+## Pestaña 6. Prueba
+
+Permite verificar el resultado del layout sin guardarlo en SQL.
+
+Botones disponibles:
+
+- **Procesar con layout** — toma el layout actual en memoria, lo escribe a un archivo temporal y llama al `lector_facturas_to_json_v5` con `--layout-file`. Muestra el JSON resultante formateado.
+- **Procesar con IA** — llama al v5 sin layout, usando IA normalmente. Útil para comparar resultados.
+
+El proceso corre en segundo plano; la UI no se bloquea. El resultado aparece en el área de texto con scroll horizontal y vertical.
+
+Requisito: el `lector_facturas_to_json_v5.exe` (o `.py`) debe estar en la misma carpeta que el configurador.
+
+---
+
 ## Detección automática con IA
 
 La herramienta incluye una ayuda inicial para proponer zonas y columnas automáticamente.
@@ -132,7 +148,7 @@ Uso:
 
 1. abrir el comprobante
 2. verificar la página si es PDF
-3. elegir o dejar el `Modelo IA`
+3. elegir el `Modelo IA` en el combo (default: `gpt-4.1`, recomendado para detección)
 4. hacer clic en `Detectar zonas IA`
 
 La IA analiza la imagen visible del comprobante y propone:
@@ -575,7 +591,10 @@ Y el JSON se guarda en:
 | `ZONE_HELP` | Textos de ayuda por zona que se muestran en la UI |
 | `DETAIL_FIELD_HELP` | Textos de ayuda por campo de detalle |
 | `DEFAULT_LAYOUT_GROUP` | `"IA_COMPRAS"` — valor fijo del campo `Grupo` en `TA_CONFIGURACION` |
-| `LAST_CONN_FILE` | Path a `layout_config_last_connection.json` (misma carpeta que el script) |
+| `LAST_CONN_FILE` | Path a `layout_config_last_connection.json` — resuelto junto al exe/script (usa `sys.executable` cuando está compilado) |
+| `DEFAULT_AI_MODEL` | `"gpt-4.1-mini"` — modelo por defecto para procesamiento en producción (v5) |
+| `DEFAULT_DETECTION_MODEL` | `"gpt-4.1"` — modelo por defecto en el combo de detección de zonas del configurador |
+| `AI_MODELS` | Lista de modelos disponibles en el combo: `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o`, `gpt-4o-mini` |
 
 ### Clases principales
 
