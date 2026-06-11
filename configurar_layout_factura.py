@@ -66,6 +66,23 @@ except Exception:
 
 try:
     import pytesseract
+    import subprocess as _sp, os as _os
+    def _find_tesseract_cmd() -> None:
+        try:
+            _sp.run([pytesseract.pytesseract.tesseract_cmd, "--version"], capture_output=True, timeout=5)
+            return
+        except Exception:
+            pass
+        for _p in [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            _os.path.join(_os.environ.get("LOCALAPPDATA", ""), "Tesseract-OCR", "tesseract.exe"),
+        ]:
+            if _p and _os.path.isfile(_p):
+                pytesseract.pytesseract.tesseract_cmd = _p
+                return
+    _find_tesseract_cmd()
+    del _find_tesseract_cmd, _sp, _os
 except Exception:
     pytesseract = None
 
@@ -694,13 +711,15 @@ class DocumentImageLoader:
                 raise RuntimeError("Para abrir PDF como imagen necesitás pymupdf/fitz: pip install pymupdf")
             doc = fitz.open(path)
             try:
-                page_index = max(0, min(page - 1, doc.page_count - 1))
+                total_pages = max(1, doc.page_count)
+                page_index = max(0, min(page - 1, total_pages - 1))
                 pdf_page = doc.load_page(page_index)
                 pix = pdf_page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
                 img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
                 return img, {
                     "file_type": "pdf",
                     "page": page_index + 1,
+                    "total_pages": total_pages,
                     "original_width": img.width,
                     "original_height": img.height,
                 }
@@ -1056,6 +1075,8 @@ class LayoutEditorApp:
         self._busy_label_var: Optional[Any] = None
         self._zoom_factor: float = 1.0
         self._busy_cancel_event: Optional[Any] = None
+        self._total_pages: int = 1
+        self._doc_files: List[str] = []   # todos los archivos del comprobante
 
         self.var_server = tk.StringVar(value=config.server)
         self.var_database = tk.StringVar(value=config.database)
@@ -1154,10 +1175,17 @@ class LayoutEditorApp:
         ttk.Button(parent, text="Abrir archivo", command=self.on_open_file).grid(row=0, column=2)
 
         ttk.Label(parent, text="Página PDF:").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Spinbox(parent, textvariable=self.var_page, from_=1, to=9999, width=8).grid(
-            row=1, column=1, sticky="w", padx=(6, 0), pady=(8, 0)
-        )
-        ttk.Button(parent, text="Recargar página", command=self.on_reload_page).grid(row=1, column=2, pady=(8, 0))
+        nav_frame = ttk.Frame(parent)
+        nav_frame.grid(row=1, column=1, columnspan=2, sticky="w", padx=(6, 0), pady=(8, 0))
+        ttk.Button(nav_frame, text="◀", width=3, command=self.on_page_prev).pack(side="left")
+        _spb = ttk.Spinbox(nav_frame, textvariable=self.var_page, from_=1, to=9999, width=5,
+                           command=lambda: self.after(0, self.on_reload_page))
+        _spb.pack(side="left", padx=(4, 2))
+        _spb.bind("<Return>",   lambda _e: self.after(0, self.on_reload_page))
+        _spb.bind("<KP_Enter>", lambda _e: self.after(0, self.on_reload_page))
+        self.lbl_total_pages = ttk.Label(nav_frame, text="/ 1")
+        self.lbl_total_pages.pack(side="left")
+        ttk.Button(nav_frame, text="▶", width=3, command=self.on_page_next).pack(side="left", padx=(4, 0))
 
         ttk.Label(parent, text="Prompt file:").grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(parent, textvariable=self.var_prompt_file).grid(row=2, column=1, sticky="ew", padx=(6, 4), pady=(8, 0))
@@ -1373,10 +1401,45 @@ class LayoutEditorApp:
             messagebox.showwarning("Sin documento", "Abrí un comprobante primero.")
             return
 
+        is_ia = "--layout-only" not in extra_args
         self.var_prueba_status.set("Procesando...")
         self.prueba_text.configure(state="normal")
         self.prueba_text.delete("1.0", "end")
+        if is_ia:
+            n_files = len(self._doc_files) if len(self._doc_files) > 1 else 1
+            self.prueba_text.insert(
+                "end",
+                f"Procesando con IA ({n_files} imagen{'es' if n_files > 1 else ''})...\n"
+                f"Esto puede tardar varios minutos. Por favor esperá.\n\n"
+                f"(Llamada 1 de {n_files} en progreso...)"
+            )
+        else:
+            self.prueba_text.insert("end", "Procesando con layout...")
         self.prueba_text.configure(state="disabled")
+
+        _stop_anim = threading.Event()
+
+        def _animate():
+            dots = 0
+            while not _stop_anim.wait(2.0):
+                dots = (dots % 3) + 1
+                if is_ia:
+                    msg = (
+                        f"Procesando con IA ({n_files} imagen{'es' if n_files > 1 else ''})...\n"
+                        f"Esto puede tardar varios minutos. Por favor esperá.\n\n"
+                        f"{'.' * dots}"
+                    )
+                else:
+                    msg = f"Procesando con layout{'.' * dots}"
+                self.root.after(0, lambda m=msg: _update_anim(m))
+
+        def _update_anim(msg: str) -> None:
+            self.prueba_text.configure(state="normal")
+            self.prueba_text.delete("1.0", "end")
+            self.prueba_text.insert("end", msg)
+            self.prueba_text.configure(state="disabled")
+
+        threading.Thread(target=_animate, daemon=True).start()
 
         def _worker():
             try:
@@ -1392,13 +1455,41 @@ class LayoutEditorApp:
                     return
 
                 outdir = tempfile.mkdtemp(prefix="lyt_prueba_")
+
+                # Determinar lista de archivos a procesar
+                input_files = [doc_path]
+                temp_pages_dir = None
+                if len(self._doc_files) > 1:
+                    # Múltiples archivos cargados → mandarlos todos en orden
+                    input_files = list(self._doc_files)
+                elif Path(doc_path).suffix.lower() == ".pdf" and fitz is not None:
+                    try:
+                        doc_fitz = fitz.open(doc_path)
+                        n_pages = doc_fitz.page_count
+                        if n_pages > 1:
+                            temp_pages_dir = tempfile.mkdtemp(prefix="lyt_pages_")
+                            stem = Path(doc_path).stem
+                            input_files = []
+                            for pg_idx in range(n_pages):
+                                single = fitz.open()
+                                single.insert_pdf(doc_fitz, from_page=pg_idx, to_page=pg_idx)
+                                pg_path = Path(temp_pages_dir) / f"{stem}__page_{pg_idx + 1:03d}.pdf"
+                                single.save(str(pg_path))
+                                single.close()
+                                input_files.append(str(pg_path))
+                        doc_fitz.close()
+                    except Exception:
+                        input_files = [doc_path]
+
+                # Layout: hasta 3 min. IA con imágenes: hasta 20 min (N JPEGs × API call).
+                _timeout = 180 if "--layout-only" in extra_args else 1200
                 result = subprocess.run(
-                    cmd + [doc_path] + extra_args + ["--outdir", outdir],
+                    cmd + input_files + extra_args + ["--outdir", outdir],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    timeout=120,
+                    timeout=_timeout,
                 )
                 json_path = result.stdout.strip()
                 if json_path and Path(json_path).is_file():
@@ -1413,9 +1504,22 @@ class LayoutEditorApp:
                     err = result.stderr.strip() or result.stdout.strip() or "Sin salida."
                     self.root.after(0, lambda e=err: self._prueba_set_result(f"ERROR:\n{e}"))
             except subprocess.TimeoutExpired:
-                self.root.after(0, lambda: self._prueba_set_result("Tiempo de espera agotado (120s)."))
+                mins = _timeout // 60
+                self.root.after(0, lambda m=mins: self._prueba_set_result(
+                    f"Tiempo de espera agotado ({m} min).\n"
+                    f"Con {len(input_files)} imagen(es) y procesamiento por IA puede demorar más.\n"
+                    f"Intentá con menos archivos o usá 'Procesar con layout' que es instantáneo."
+                ))
             except Exception as ex:
                 self.root.after(0, lambda e=str(ex): self._prueba_set_result(f"Error inesperado:\n{e}"))
+            finally:
+                _stop_anim.set()
+                if temp_pages_dir:
+                    import shutil
+                    try:
+                        shutil.rmtree(temp_pages_dir, ignore_errors=True)
+                    except Exception:
+                        pass
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1435,10 +1539,10 @@ class LayoutEditorApp:
             return
         tmp = Path(tempfile.mktemp(suffix=".json", prefix="lyt_test_"))
         tmp.write_text(json.dumps(layout, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._run_v5(["--layout-file", str(tmp)])
+        self._run_v5(["--layout-file", str(tmp), "--layout-only"])
 
     def on_run_test_ia(self) -> None:
-        self._run_v5([])
+        self._run_v5(["--all-pages"])
 
     def _build_canvas_panel(self, parent: Any) -> None:
         canvas_frame = ttk.LabelFrame(parent, text="Vista del comprobante", padding=8)
@@ -1525,22 +1629,27 @@ class LayoutEditorApp:
         selection = self.zone_type_listbox.curselection()
         if selection:
             zone_type = str(self.zone_type_listbox.get(selection[0]))
+            # Guard: si es la misma zona (selección programática desde _refresh_zones_list),
+            # no redibujar para evitar el loop infinito de eventos <<ListboxSelect>>.
+            if zone_type == self.selected_zone_type:
+                return
             self.var_zone_type.set(zone_type)
             self.selected_zone_type = zone_type
             if hasattr(self, "zone_help_label"):
                 self.zone_help_label.configure(text=ZONE_HELP.get(zone_type, ""))
-            # Siempre redibujar: si la zona no está definida, el canvas queda sin highlight
             self._redraw_canvas()
 
     def on_column_field_selected(self, _event: Any = None) -> None:
         selection = self.column_field_listbox.curselection()
         if selection:
             field_name = str(self.column_field_listbox.get(selection[0]))
+            # Guard: misma selección programática → evitar loop infinito de <<ListboxSelect>>
+            if field_name == self.selected_column_field:
+                return
             self.var_column_field.set(field_name)
             self.selected_column_field = field_name
             if hasattr(self, "column_help_label"):
                 self.column_help_label.configure(text=DETAIL_FIELD_HELP.get(field_name, ""))
-            # Siempre redibujar: si el campo no está definido, el canvas queda sin highlight
             self._redraw_canvas()
 
     def on_zoom_in(self) -> None:
@@ -1738,23 +1847,71 @@ class LayoutEditorApp:
             self.var_prompt_file.set(path)
 
     def on_open_file(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Seleccionar comprobante",
+        paths = filedialog.askopenfilenames(
+            title="Seleccionar comprobante (podés elegir varios archivos a la vez)",
             filetypes=[
                 ("Documentos", "*.pdf;*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff"),
                 ("Todos", "*.*"),
             ],
         )
-        if path:
-            self.var_file.set(path)
-            self.load_document(path, self.var_page.get())
-            self._select_left_tab(0)
+        if not paths:
+            return
+        self._doc_files = sorted(paths)   # orden alfabético = orden de páginas
+        self._total_pages = len(self._doc_files)
+        self._update_page_nav()
+        self.var_page.set(1)
+        self.var_file.set(self._doc_files[0])
+        self.load_document(self._doc_files[0], 1)
+        self._select_left_tab(0)
 
     def on_reload_page(self) -> None:
-        if not self.var_file.get().strip():
+        if not self._doc_files and not self.var_file.get().strip():
             self.show_error("Seleccioná primero un archivo.")
             return
-        self.load_document(self.var_file.get().strip(), self.var_page.get())
+        page = self.var_page.get()
+        if len(self._doc_files) > 1:
+            # Modo multi-archivo: cada "página" es un archivo distinto
+            idx = max(0, min(len(self._doc_files) - 1, page - 1))
+            path = self._doc_files[idx]
+            self.var_file.set(path)
+            self.load_document(path, 1)
+        else:
+            path = self.var_file.get().strip()
+            if path:
+                self.load_document(path, page)
+
+    def on_page_prev(self) -> None:
+        p = max(1, self.var_page.get() - 1)
+        self.var_page.set(p)
+        self.on_reload_page()
+
+    def on_page_next(self) -> None:
+        limit = self._total_pages if self._total_pages > 1 else 9999
+        p = min(limit, self.var_page.get() + 1)
+        self.var_page.set(p)
+        self.on_reload_page()
+
+    def _count_pdf_pages(self, path: str) -> int:
+        if fitz is not None:
+            try:
+                doc = fitz.open(path)
+                n = doc.page_count
+                doc.close()
+                if n > 0:
+                    return n
+            except Exception:
+                pass
+        if pdfplumber is not None:
+            try:
+                with pdfplumber.open(path) as _pdf:
+                    return max(1, len(_pdf.pages))
+            except Exception:
+                pass
+        return 1
+
+    def _update_page_nav(self) -> None:
+        if hasattr(self, "lbl_total_pages"):
+            self.lbl_total_pages.configure(text=f"/ {self._total_pages}")
 
     def load_document(self, path: str, page: int) -> None:
         try:
@@ -1771,12 +1928,18 @@ class LayoutEditorApp:
             original_width=int(meta["original_width"]),
             original_height=int(meta["original_height"]),
         )
+        if len(self._doc_files) > 1:
+            self._total_pages = len(self._doc_files)   # multi-archivo: no pisar
+        else:
+            self._total_pages = int(meta.get("total_pages") or 1)
+        self._update_page_nav()
         self.config.last_file = path
         self._zoom_factor = 1.0
         save_last_connection(self._current_config())
         self._fit_image_to_canvas()
         self._refresh_layout_summary()
-        self.set_status(f"Documento cargado: {Path(path).name} | {self.document.original_width}x{self.document.original_height}")
+        n_info = f" ({self._total_pages} pág.)" if self._total_pages > 1 else ""
+        self.set_status(f"Documento cargado: {Path(path).name}{n_info} | {self.document.original_width}x{self.document.original_height}")
 
     def _fit_image_to_canvas(self) -> None:
         if self.document.image_original is None or ImageTk is None:
@@ -2033,6 +2196,9 @@ class LayoutEditorApp:
         text = self.zone_listbox.get(selection[0])
         if text.startswith("Zona "):
             zone_type = text.split(":", 1)[0].replace("Zona ", "").strip()
+            # Guard: misma zona → evitar loop infinito de <<ListboxSelect>>
+            if zone_type == self.selected_zone_type:
+                return
             self.selected_zone_type = zone_type
             self.var_zone_type.set(zone_type)
             try:
@@ -2075,6 +2241,9 @@ class LayoutEditorApp:
         text = self.columns_listbox.get(selection[0])
         if text.startswith("Col "):
             field_name = text.split(":", 1)[0].split(" ", 2)[-1].strip()
+            # Guard: mismo campo → evitar loop infinito de <<ListboxSelect>>
+            if field_name == self.selected_column_field:
+                return
             self.selected_column_field = field_name
             self.var_column_field.set(field_name)
             try:
@@ -2492,6 +2661,9 @@ class LayoutEditorApp:
         self.selected_zone_type = ""
         self.selected_column_field = ""
         self._zoom_factor = 1.0
+        self._total_pages = 1
+        self._doc_files = []
+        self._update_page_nav()
         self._selection_start = None
         if self._selection_rect_id is not None:
             try:
