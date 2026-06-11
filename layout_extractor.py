@@ -46,6 +46,30 @@ except ImportError:
 
 try:
     import pytesseract
+    # En Windows Tesseract suele no estar en PATH aunque esté instalado.
+    # Lo buscamos en las rutas más comunes y configuramos el cmd si hace falta.
+    import subprocess as _sp, os as _os
+    def _find_tesseract() -> None:
+        try:
+            _sp.run(
+                [pytesseract.pytesseract.tesseract_cmd, "--version"],
+                capture_output=True, timeout=5,
+            )
+            return  # ya funciona
+        except Exception:
+            pass
+        _candidates = [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            _os.path.join(_os.environ.get("LOCALAPPDATA", ""), "Tesseract-OCR", "tesseract.exe"),
+            _os.path.join(_os.environ.get("USERPROFILE", ""), "AppData", "Local", "Tesseract-OCR", "tesseract.exe"),
+        ]
+        for _p in _candidates:
+            if _p and _os.path.isfile(_p):
+                pytesseract.pytesseract.tesseract_cmd = _p
+                return
+    _find_tesseract()
+    del _find_tesseract, _sp, _os
 except ImportError:
     pytesseract = None
 
@@ -171,7 +195,10 @@ def _zone_text_ocr(image: Any, zone: Dict[str, float]) -> str:
         crop = image.crop((x1, y1, x2, y2))
         if ImageOps is not None:
             crop = ImageOps.grayscale(crop)
-        return pytesseract.image_to_string(crop, lang="spa")
+        try:
+            return pytesseract.image_to_string(crop, lang="spa")
+        except Exception:
+            return pytesseract.image_to_string(crop)
     except Exception:
         return ""
 
@@ -535,16 +562,27 @@ def _detail_rows_pdfplumber(
 def _detail_rows_ocr(
     image: Any,
     layout: Dict[str, Any],
+    log_fn=None,
+    diag: Optional[List[str]] = None,
 ) -> List[Dict[str, str]]:
     """
     Extrae filas del detalle usando OCR con bounding boxes de pytesseract.
+    diag: lista opcional donde se acumulan mensajes de diagnóstico para observaciones.
     """
+    def _log(msg: str) -> None:
+        if log_fn:
+            log_fn(msg)
+        if diag is not None:
+            diag.append(msg)
+
     if pytesseract is None or Image is None or image is None:
+        _log("OCR: pytesseract o PIL no disponibles.")
         return []
     zones = layout.get("zonas") or {}
     dz = zones.get("detalle")
     columns = layout.get("detalle_columnas") or []
     if not dz or not columns:
+        _log(f"OCR: zona detalle={'definida' if dz else 'AUSENTE'}, columnas={len(columns)}.")
         return []
     try:
         img_w, img_h = image.size
@@ -560,9 +598,19 @@ def _detail_rows_ocr(
         if ImageOps is not None:
             crop = ImageOps.grayscale(crop)
 
-        data = pytesseract.image_to_data(
-            crop, lang="spa", output_type=pytesseract.Output.DICT
-        )
+        try:
+            data = pytesseract.image_to_data(
+                crop, lang="spa", output_type=pytesseract.Output.DICT
+            )
+        except Exception as _e_spa:
+            _log(f"Layout OCR: lang=spa falló ({_e_spa}), reintentando sin idioma.")
+            try:
+                data = pytesseract.image_to_data(
+                    crop, output_type=pytesseract.Output.DICT
+                )
+            except Exception as _e2:
+                _log(f"Layout OCR: pytesseract.image_to_data falló: {_e2}")
+                return []
 
         # Las columnas del layout son relativas al ancho COMPLETO de la imagen.
         # Dentro del crop, el offset horizontal es x1 (en píxeles).
@@ -591,8 +639,18 @@ def _detail_rows_ocr(
                 "line_num":  data["line_num"][i],
             })
 
-        return _assign_words_to_columns(words, col_defs, x_key="x0")
-    except Exception:
+        _log(f"Layout OCR detalle: {len(words)} palabras detectadas en zona detalle ({img_w}x{img_h}px).")
+        if words and diag is not None:
+            sample = words[:5]
+            sample_str = "; ".join(f"'{w['text']}'@x{w['x0']}" for w in sample)
+            col_str = "; ".join(f"{c['campo']}[{c['x1']}-{c['x2']}]" for c in col_defs)
+            _log(f"Muestra palabras: {sample_str}")
+            _log(f"Rangos columnas en crop: {col_str}")
+        rows = _assign_words_to_columns(words, col_defs, x_key="x0")
+        _log(f"Layout OCR detalle: {len(rows)} filas asignadas a columnas.")
+        return rows
+    except Exception as _e_outer:
+        _log(f"Layout OCR detalle: error inesperado: {_e_outer}")
         return []
 
 
@@ -711,40 +769,78 @@ def try_layout_extraction(
         if not files:
             return None
 
-        first_file = files[0]
-        page = int((layout.get("origen") or {}).get("pagina") or 1)
+        # ── Build (file, page) pairs ─────────────────────────────────────────
+        # Multiple expanded files → each is a 1-page temp PDF, always use page 1.
+        # Single multi-page PDF  → count pages with pdfplumber, iterate each.
+        # Single-page file       → use the page recorded in the layout origin.
+        if len(files) > 1:
+            file_page_pairs: List[Tuple[str, int]] = [(f, 1) for f in files]
+        elif Path(files[0]).suffix.lower() == ".pdf":
+            n_pdf_pages = 1
+            try:
+                with pdfplumber.open(files[0]) as _tmp_pdf:
+                    n_pdf_pages = max(1, len(_tmp_pdf.pages))
+            except Exception:
+                pass
+            if n_pdf_pages > 1:
+                file_page_pairs = [(files[0], pg) for pg in range(1, n_pdf_pages + 1)]
+            else:
+                layout_page = int((layout.get("origen") or {}).get("pagina") or 1)
+                file_page_pairs = [(files[0], layout_page)]
+        else:
+            file_page_pairs = [(files[0], 1)]
 
-        # 2 ── Abrir imagen (para OCR de fallback)
-        _log("Layout: abriendo imagen...")
-        image = _open_as_pil(first_file, page)
-        # image puede ser None si no hay fitz/PIL — las funciones lo toleran
+        first_fp, first_pg = file_page_pairs[0]
+        last_fp,  last_pg  = file_page_pairs[-1]
+
+        # 2 ── Abrir imágenes (para OCR de fallback)
+        _log("Layout: abriendo imágenes...")
+        image_first = _open_as_pil(first_fp, first_pg)
+        image_last = (
+            _open_as_pil(last_fp, last_pg)
+            if (last_fp, last_pg) != (first_fp, first_pg)
+            else image_first
+        )
 
         cab: Dict[str, str] = {}
         totales: Dict[str, str] = {}
         totales_raw_text = ""
 
-        # 3 ── Parsear zonas de texto
-        for zone_name, parser, target in [
-            ("proveedor", _parse_proveedor, cab),
-            ("cabecera",  _parse_cabecera,  cab),
-            ("cae",       _parse_cae_zone,  cab),
-            ("totales",   _parse_totales,   totales),
+        # 3a ── CAB: proveedor y cabecera desde la PRIMERA página
+        for zone_name, parser in [
+            ("proveedor", _parse_proveedor),
+            ("cabecera",  _parse_cabecera),
         ]:
             zone_def = zones.get(zone_name)
             if not zone_def:
                 continue
-            _log(f"Layout: zona {zone_name}...")
+            _log(f"Layout: zona {zone_name} (pág {first_pg})...")
+            text = _get_zone_text(
+                first_fp, first_pg, zone_def, image_first,
+                combine_ocr=(zone_name == "proveedor"),
+            )
+            parsed = parser(text)
+            for k, v in parsed.items():
+                if v and not cab.get(k):
+                    cab[k] = v
+
+        # 3b ── TOTALES y CAE desde la ÚLTIMA página
+        n_pairs = len(file_page_pairs)
+        for zone_name, parser, target in [
+            ("cae",     _parse_cae_zone, cab),
+            ("totales", _parse_totales,  totales),
+        ]:
+            zone_def = zones.get(zone_name)
+            if not zone_def:
+                continue
+            _log(f"Layout: zona {zone_name} (pág {last_pg})...")
             if zone_name == "totales":
-                text = _totales_text_pdfplumber(first_file, page, zone_def)
+                text = _totales_text_pdfplumber(last_fp, last_pg, zone_def)
                 if not text:
-                    text = _get_zone_text(first_file, page, zone_def, image)
+                    text = _get_zone_text(last_fp, last_pg, zone_def, image_last)
                 totales_raw_text = text
             else:
-                # En zona proveedor combinamos OCR + pdfplumber
-                text = _get_zone_text(
-                    first_file, page, zone_def, image,
-                    combine_ocr=(zone_name == "proveedor"),
-                )
+                text = _get_zone_text(last_fp, last_pg, zone_def, image_last)
             parsed = parser(text)
             for k, v in parsed.items():
                 if v and not target.get(k):
@@ -761,18 +857,36 @@ def try_layout_extraction(
         if cab.get("Fecha") and not cab.get("FechaSubdiario"):
             cab["FechaSubdiario"] = cab["Fecha"]
 
-        # 4 ── Extraer filas del detalle
+        # 4 ── Extraer filas del detalle desde TODAS las páginas
         rows: List[Dict[str, str]] = []
+        diag_msgs: List[str] = []
         if zones.get("detalle") and columns:
-            _log("Layout: extrayendo detalle...")
-            ext = Path(first_file).suffix.lower()
-            if ext == ".pdf":
-                rows = _detail_rows_pdfplumber(first_file, page, layout)
-            if not rows:  # fallback a OCR
-                rows = _detail_rows_ocr(image, layout)
-            _log(f"Layout: {len(rows)} fila(s) detectada(s).")
+            for i, (f, pg) in enumerate(file_page_pairs):
+                img = (
+                    image_first if i == 0
+                    else (image_last if i == n_pairs - 1
+                          else _open_as_pil(f, pg))
+                )
+                _log(f"Layout: extrayendo detalle pág {i + 1}/{n_pairs}...")
+                ext = Path(f).suffix.lower()
+                page_rows: List[Dict[str, str]] = []
+                if ext == ".pdf":
+                    page_rows = _detail_rows_pdfplumber(f, pg, layout)
+                if not page_rows:
+                    ocr_diag: List[str] = []
+                    page_rows = _detail_rows_ocr(img, layout, log_fn=log_fn, diag=ocr_diag)
+                    if ocr_diag:
+                        diag_msgs.extend(ocr_diag)
+                _log(f"Layout: {len(page_rows)} fila(s) en pág {i + 1}.")
+                rows.extend(page_rows)
+            _log(f"Layout: {len(rows)} fila(s) total.")
 
         # 5 ── Armar resultado
+        n_pages = n_pairs
+        obs = "Extraído con layout sin IA." if n_pages == 1 else f"Extraído con layout sin IA ({n_pages} páginas)."
+        # Incluir diagnóstico OCR en observaciones cuando no hay filas
+        if not rows and diag_msgs:
+            obs = obs + " DIAG-OCR: " + " | ".join(diag_msgs)
         result: Dict[str, Any] = {
             "CAB": cab,
             "ROWS": rows,
@@ -780,17 +894,20 @@ def try_layout_extraction(
             "meta": {
                 "comprobante_raw": "",
                 "moneda_detectada": "",
-                "observaciones": "Extraído con layout sin IA.",
+                "observaciones": obs,
                 "totales_raw": totales_raw_text,
                 "orden_columnas": [c["campo"] for c in columns],
                 "layout_usado": True,
             },
         }
 
-        # 6 ── Verificar confiabilidad
+        # 6 ── Anotar confiabilidad en observaciones (nunca se descarta el resultado)
         if not _is_reliable(result):
-            _log("Layout: resultado insuficiente (pocas filas o sin identificadores), se usará IA.")
-            return None
+            _log("Layout: resultado insuficiente (pocas filas o sin identificadores).")
+            meta = result.setdefault("meta", {})
+            obs = str(meta.get("observaciones") or "").strip()
+            aviso = "Resultado de layout insuficiente: pocas filas o sin CUIT/comprobante detectados."
+            meta["observaciones"] = f"{obs} {aviso}".strip() if obs else aviso
 
         _log("Layout: extracción OK.")
         return result

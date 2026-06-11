@@ -108,6 +108,11 @@ except Exception:
     PdfReader = None
     PdfWriter = None
 
+try:
+    import fitz as _fitz  # pymupdf — fallback para expansión de PDFs
+except Exception:
+    _fitz = None
+
 
 MAX_INPUT_FILES = 10
 
@@ -429,12 +434,21 @@ def _normalize_cli_file_args(file_args: List[str]) -> List[str]:
 
 
 def _count_pdf_pages(file_path: str) -> int:
-    if PdfReader is None:
-        return 1
-    try:
-        return max(1, len(PdfReader(file_path).pages))
-    except Exception:
-        return 1
+    if PdfReader is not None:
+        try:
+            return max(1, len(PdfReader(file_path).pages))
+        except Exception:
+            pass
+    if _fitz is not None:
+        try:
+            doc = _fitz.open(file_path)
+            n = doc.page_count
+            doc.close()
+            if n > 0:
+                return n
+        except Exception:
+            pass
+    return 1
 
 
 def _expand_pdf_inputs(file_paths: List[str], temp_dir: str) -> tuple[List[str], List[str]]:
@@ -453,21 +467,43 @@ def _expand_pdf_inputs(file_paths: List[str], temp_dir: str) -> tuple[List[str],
             expanded.append(file_path)
             continue
 
-        if PdfReader is None or PdfWriter is None:
-            raise SystemExit(
-                "ERROR: Para procesar todas las hojas de un PDF multipagina necesitás instalar pypdf: pip install pypdf"
-            )
-
-        reader = PdfReader(file_path)
         stem = Path(file_path).stem
-        for page_index in range(total_pages):
-            writer = PdfWriter()
-            writer.add_page(reader.pages[page_index])
-            temp_page = Path(temp_dir) / f"{stem}__page_{page_index + 1:03d}.pdf"
-            with temp_page.open("wb") as fh:
-                writer.write(fh)
-            expanded.append(str(temp_page))
-            created_temp_files.append(str(temp_page))
+
+        if PdfReader is not None and PdfWriter is not None:
+            # Ruta preferida: split con pypdf (genera PDFs de 1 página)
+            try:
+                reader = PdfReader(file_path)
+                for page_index in range(total_pages):
+                    writer = PdfWriter()
+                    writer.add_page(reader.pages[page_index])
+                    temp_page = Path(temp_dir) / f"{stem}__page_{page_index + 1:03d}.pdf"
+                    with temp_page.open("wb") as fh:
+                        writer.write(fh)
+                    expanded.append(str(temp_page))
+                    created_temp_files.append(str(temp_page))
+                continue
+            except Exception:
+                pass  # Caer al fallback fitz
+
+        if _fitz is not None:
+            # Fallback: renderizar cada página como imagen PNG con fitz
+            try:
+                doc = _fitz.open(file_path)
+                mat = _fitz.Matrix(2.0, 2.0)  # ~144 dpi
+                for page_index in range(doc.page_count):
+                    pix = doc[page_index].get_pixmap(matrix=mat)
+                    temp_img = Path(temp_dir) / f"{stem}__page_{page_index + 1:03d}.png"
+                    pix.save(str(temp_img))
+                    expanded.append(str(temp_img))
+                    created_temp_files.append(str(temp_img))
+                doc.close()
+                continue
+            except Exception:
+                pass
+
+        raise SystemExit(
+            "ERROR: Para procesar todas las hojas de un PDF multipagina necesitás instalar pypdf o pymupdf."
+        )
 
     return expanded, created_temp_files
 
@@ -1402,6 +1438,20 @@ def main() -> None:
              "Si el layout extrae datos confiables los usa sin llamar a IA. "
              "Si falla o el resultado es insuficiente, usa IA normalmente.",
     )
+    parser.add_argument(
+        "--layout-only",
+        action="store_true",
+        dest="layout_only",
+        help="Con --layout-file: si el layout no produce resultado confiable, "
+             "termina con error en vez de caer a IA.",
+    )
+    parser.add_argument(
+        "--all-pages",
+        action="store_true",
+        dest="all_pages",
+        help="No descartar páginas por diferencias de identificadores entre archivos. "
+             "Útil al probar comprobantes multipágina desde el configurador.",
+    )
     args = parser.parse_args()
     args.files = _normalize_cli_file_args(list(args.files))
 
@@ -1567,7 +1617,10 @@ def main() -> None:
                         page_content = [{"type": "input_text", "text": prompt}]
                         page_content.extend(file_to_content_blocks(f, args.tile, provider_only=args.proveedor))
                         page_results.append(call_model(page_content, model_name, f))
-                    accepted_results, ignored_warnings = detect_mismatched_invoice_pages(page_results, active_files)
+                    if getattr(args, "all_pages", False):
+                        accepted_results, ignored_warnings = page_results, []
+                    else:
+                        accepted_results, ignored_warnings = detect_mismatched_invoice_pages(page_results, active_files)
                     for warning in ignored_warnings:
                         log(warning)
                     data_model = merge_data_keep_best(accepted_results)
@@ -1599,7 +1652,7 @@ def main() -> None:
                     from layout_extractor import try_layout_extraction
                     data = try_layout_extraction(
                         _layout_data,
-                        active_files[:1],
+                        active_files[:5],
                         log_fn=log,
                     )
                 except ImportError:
@@ -1615,6 +1668,8 @@ def main() -> None:
                     adjust_importe_lista_for_bultos(data)
                     validate_totals_integrity(data, tolerance=0.03)
                     log("Layout: datos extraídos sin IA.")
+                elif getattr(args, "layout_only", False):
+                    raise SystemExit("ERROR: El layout no pudo procesar el archivo (zonas no definidas o archivo no legible).")
             # ------------------------------------------------------------------ #
 
             fallback_enabled = (not args.no_fallback) and bool(args.fallback_model) and args.fallback_model != args.model

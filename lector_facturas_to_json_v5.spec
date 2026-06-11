@@ -18,6 +18,12 @@ a = Analysis(
         # módulos locales importados dinámicamente (no detectados por PyInstaller)
         'layout_extractor',
         'ia_backend_transport',
+        # pypdf (separación de PDFs multipágina)
+        'pypdf',
+        'pypdf._reader',
+        'pypdf._writer',
+        'pypdf.filters',
+        'pypdf.generic',
         # pdfminer (requerido por pdfplumber)
         'pdfminer',
         'pdfminer.high_level',
