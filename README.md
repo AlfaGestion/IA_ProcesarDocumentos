@@ -9,6 +9,8 @@ Este workspace funciona en modo cliente: los lectores llaman a un backend remoto
 - `lector_facturas_to_json_v5.py`: procesa facturas y genera `.json`.
 - `lector_liquidaciones_to_json_v1.py`: procesa liquidaciones de tarjeta y genera `.txt`.
 - `lector_gastos_bancarios_xls_v1.py`: procesa extractos `.xls/.xlsx` y genera `.txt` + archivos de control.
+- `lector_movimientos_financieros_unificado.py`: prototipo unificado para extractos bancarios, liquidaciones y documentos mixtos; genera `.txt`, `.log`, `.unificado.json` y control por conceptos.
+- `probar_unificado_docprocesar.bat`: prueba manual de a un archivo usando carpeta fija `C:\DOCPROCESAR`.
 - `agente_procesar_cliente.py`: recorre carpetas de clientes (`TARJETAS` y `COMPRAS`) y ejecuta los lectores automaticamente.
 - `ia_backend_transport.py`: transporte al backend remoto (`IA_BACKEND_URL` + firma HMAC).
 
@@ -139,6 +141,59 @@ Variables relacionadas del agente:
 - `LOCK_STALE_HORAS` (default: 12)
 - `REPROCESAR_TODO` (0/1)
 - `PREAGRUPAR_COMPRAS` (0/1, default activo)
+
+### 5) Movimientos financieros unificado -> TXT + LOG + JSON + control
+
+Este flujo sirve para empezar a probar un procesamiento unificado de:
+
+- extractos bancarios Excel
+- extractos bancarios PDF
+- liquidaciones de tarjeta
+- documentos mixtos banco + tarjeta
+
+Ejemplo directo por CLI:
+
+```powershell
+python .\lector_movimientos_financieros_unificado.py "C:\Users\albert\Downloads\BNA 04-26.pdf" --outdir E:\temp
+```
+
+Salida:
+
+- `<nombre_original>.txt`
+- `<nombre_original>.log`
+- `<nombre_original>.unificado.json`
+- `<nombre_original>_control_conceptos.xls`
+
+Notas:
+
+- si se procesa un solo archivo con `--outdir`, el script imprime por stdout la ruta del `.txt`
+- el `.txt` sirve para revisar rápido el asiento resumido
+- el archivo `_control_conceptos.xls` sirve para auditar qué conceptos fueron clasificados y cómo sumaron
+
+### 6) Prueba manual con carpeta fija `C:\DOCPROCESAR`
+
+Se agregó el batch:
+
+- `probar_unificado_docprocesar.bat`
+
+Funcionamiento:
+
+- toma como carpeta fija de entrada `C:\DOCPROCESAR`
+- crea y usa como salida `C:\DOCPROCESAR\OUTDIR`
+- pide solo el nombre del archivo
+
+Uso:
+
+1. Copiar el archivo a probar dentro de `C:\DOCPROCESAR`
+2. Ejecutar `probar_unificado_docprocesar.bat`
+3. Ingresar solo el nombre, por ejemplo `BNA 04-26.pdf`
+
+Archivos generados en `C:\DOCPROCESAR\OUTDIR`:
+
+- `.txt`
+- `.log`
+- `.unificado.json`
+- `_control_conceptos.xls`
 
 ## Overrides comunes por CLI
 
