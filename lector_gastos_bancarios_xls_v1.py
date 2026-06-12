@@ -70,8 +70,8 @@ DEFAULT_RULES: Dict[str, Any] = {
                 {"match": r"GRAVAMEN LEY 25413|IMP\.DB/CR", "mode": "regex", "category": "IDC_A_COMPUTAR"},
                 {"match": r"GRAVAMEN IBRN|IMPUESTO RIONEGRINO|ING\.? ?BRUT|SIRCREB|RET\.?IIBB", "mode": "regex", "category": "RET_IIBB"},
                 {"match": r"COMISION|COMIS|^COM\b|INTERES|INTERESES|ARANCEL|GASTO BANC", "mode": "regex", "category": "GASTO"},
-                {"match": r"IVA PERCEPCION|PERCEPCION IVA|RETEN IVA|RET\.IVA|RG ?2408", "mode": "regex", "category": "RET_IVA"},
-                {"match": r"IVA BASE|IVA ALICUOTA|IVA ", "mode": "regex", "category": "IVA_CREDITO"},
+                {"match": r"\b(IVA PERCEPCION|PERCEPCION IVA|PERC\.?\s*IVA|PERCEP\.?\s*IVA|RETEN(?:CION)?\s*IVA|RET\.?\s*IVA|RG ?2408)\b", "mode": "regex", "category": "RET_IVA"},
+                {"match": r"\b(IVA BASE|IVA ALICUOTA|IVA\s+\d+(?:[.,]\d+)?(?:\s*%)?|IVA\s+[A-Z]+(?:\s+\d{4})?|CRED\.?\s*FISC(?:AL)?\s*IVA)\b", "mode": "regex", "category": "IVA_CREDITO"},
                 {"match": r"RETENCION GANAN|RET\.?GAN", "mode": "regex", "category": "RET_GAN"},
             ],
             "exclusions": [
@@ -96,8 +96,8 @@ DEFAULT_RULES: Dict[str, Any] = {
                 {"match": r"GRAVAMEN LEY 25413|IMP\.DB/CR", "mode": "regex", "category": "IDC_A_COMPUTAR"},
                 {"match": r"GRAVAMEN IBRN|IMPUESTO RIONEGRINO|ING\.? ?BRUT|SIRCREB|RET\.?IIBB", "mode": "regex", "category": "RET_IIBB"},
                 {"match": r"COMISION|COMIS|^COM\b|INTERES|INTERESES|ARANCEL|GASTO BANC", "mode": "regex", "category": "GASTO"},
-                {"match": r"IVA PERCEPCION|PERCEPCION IVA|RETEN IVA|RET\.IVA|RG ?2408", "mode": "regex", "category": "RET_IVA"},
-                {"match": r"IVA BASE|IVA ALICUOTA|IVA ", "mode": "regex", "category": "IVA_CREDITO"},
+                {"match": r"\b(IVA PERCEPCION|PERCEPCION IVA|PERC\.?\s*IVA|PERCEP\.?\s*IVA|RETEN(?:CION)?\s*IVA|RET\.?\s*IVA|RG ?2408)\b", "mode": "regex", "category": "RET_IVA"},
+                {"match": r"\b(IVA BASE|IVA ALICUOTA|IVA\s+\d+(?:[.,]\d+)?(?:\s*%)?|IVA\s+[A-Z]+(?:\s+\d{4})?|CRED\.?\s*FISC(?:AL)?\s*IVA)\b", "mode": "regex", "category": "IVA_CREDITO"},
                 {"match": r"RETENCION GANAN|RET\.?GAN", "mode": "regex", "category": "RET_GAN"},
             ],
             "exclusions": [
@@ -501,14 +501,64 @@ def _compile_rules(rules_raw: List[Dict[str, str]]) -> List[Tuple[str, Any, str]
 
 def _match_category(desc: str, compiled_rules: List[Tuple[str, Any, str]]) -> Optional[str]:
     nd = _norm_text(desc)
-    if "IVA PERCEPCION" in nd or "PERCEPCION IVA" in nd:
+    if "IVA PERCEPCION" in nd or "PERCEPCION IVA" in nd or "PERC. IVA" in nd or "PERCEP. IVA" in nd:
         return "RET_IVA"
+
+    transfer_like_markers = [
+        "TRANSFERENCIA",
+        "TRANSFER ",
+        "DEPOSITO",
+        "DEBIN",
+        "PAGO PROVEEDOR",
+        "SUELDO",
+        "HABERES",
+    ]
+    strong_tax_markers = [
+        "PERCEPCION IVA",
+        "IVA PERCEPCION",
+        "PERC. IVA",
+        "PERCEP. IVA",
+        "RET IVA",
+        "RET. IVA",
+        "RETENCION IVA",
+        "RG 2408",
+        "RG2408",
+        "IVA BASE",
+        "IVA ALICUOTA",
+        "CRED FISC IVA",
+        "CRED. FISC IVA",
+        "CREDITO FISCAL IVA",
+        "BASE IMPONIBLE IVA",
+        "IVA 21",
+        "IVA 10,5",
+        "IVA 10.5",
+        "IVA ABRIL",
+        "IVA MAYO",
+        "IVA JUNIO",
+        "IVA JULIO",
+        "IVA AGOSTO",
+        "IVA SEPTIEMBRE",
+        "IVA SETIEMBRE",
+        "IVA OCTUBRE",
+        "IVA NOVIEMBRE",
+        "IVA DICIEMBRE",
+        "IVA ENERO",
+        "IVA FEBRERO",
+        "IVA MARZO",
+    ]
+    looks_transfer_like = any(marker in nd for marker in transfer_like_markers)
+    has_strong_tax_signal = any(marker in nd for marker in strong_tax_markers)
+
     for mode, patt, cat in compiled_rules:
         if mode == "regex":
-            if patt.search(desc):
+            if patt.search(nd):
+                if cat in {"IVA_CREDITO", "RET_IVA"} and looks_transfer_like and not has_strong_tax_signal:
+                    continue
                 return cat
         else:
             if patt in nd:
+                if cat in {"IVA_CREDITO", "RET_IVA"} and looks_transfer_like and not has_strong_tax_signal:
+                    continue
                 return cat
     return None
 

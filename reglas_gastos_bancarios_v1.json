@@ -38,12 +38,12 @@
           "category": "GASTO"
         },
         {
-          "match": "IVA PERCEPCION|PERCEPCION IVA|RETEN IVA|RET\\.IVA|RG ?2408",
+          "match": "\\b(IVA PERCEPCION|PERCEPCION IVA|PERC\\.?\\s*IVA|PERCEP\\.?\\s*IVA|RETEN(?:CION)?\\s*IVA|RET\\.?\\s*IVA|RG ?2408)\\b",
           "mode": "regex",
           "category": "RET_IVA"
         },
         {
-          "match": "IVA BASE|IVA ALICUOTA|IVA ",
+          "match": "\\b(IVA BASE|IVA ALICUOTA|IVA\\s+\\d+(?:[.,]\\d+)?(?:\\s*%)?|IVA\\s+[A-Z]+(?:\\s+\\d{4})?|CRED\\.?\\s*FISC(?:AL)?\\s*IVA)\\b",
           "mode": "regex",
           "category": "IVA_CREDITO"
         },
@@ -100,12 +100,12 @@
           "category": "GASTO"
         },
         {
-          "match": "IVA PERCEPCION|PERCEPCION IVA|RETEN IVA|RET\\.IVA|RG ?2408",
+          "match": "\\b(IVA PERCEPCION|PERCEPCION IVA|PERC\\.?\\s*IVA|PERCEP\\.?\\s*IVA|RETEN(?:CION)?\\s*IVA|RET\\.?\\s*IVA|RG ?2408)\\b",
           "mode": "regex",
           "category": "RET_IVA"
         },
         {
-          "match": "IVA BASE|IVA ALICUOTA|IVA ",
+          "match": "\\b(IVA BASE|IVA ALICUOTA|IVA\\s+\\d+(?:[.,]\\d+)?(?:\\s*%)?|IVA\\s+[A-Z]+(?:\\s+\\d{4})?|CRED\\.?\\s*FISC(?:AL)?\\s*IVA)\\b",
           "mode": "regex",
           "category": "IVA_CREDITO"
         },
