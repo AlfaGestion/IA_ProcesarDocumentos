@@ -75,6 +75,7 @@ class StatusUI:
 
         self.q: "queue.Queue[str]" = queue.Queue()
         self.t0 = time.time()
+        self._finished = False
 
         self.root = tk.Tk()
         self.root.title(title)
@@ -101,6 +102,10 @@ class StatusUI:
         self.txt.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self.txt.configure(state="disabled")
 
+        self.btn_close = ttk.Button(self.root, text="Cerrar", command=self._close_window)
+        self.btn_close.pack(padx=12, pady=(0, 12), anchor="e")
+        self.btn_close.pack_forget()
+
         self._closed = False
         self._time_after_id = None
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -109,8 +114,18 @@ class StatusUI:
         self._time_after_id = self.root.after(200, self._tick_time)
 
     def _on_close(self):
-        # Si cierran la ventana, no matamos el proceso; solo ocultamos.
+        if self._finished:
+            self._close_window()
+            return
+
+        # Si cierran la ventana durante el proceso, no matamos el proceso; solo ocultamos.
         self._closed = True
+        try:
+            self.root.withdraw()
+        except Exception:
+            pass
+
+    def _stop_timers_and_progress(self):
         if self._time_after_id is not None:
             try:
                 self.root.after_cancel(self._time_after_id)
@@ -118,7 +133,15 @@ class StatusUI:
                 pass
             self._time_after_id = None
         try:
-            self.root.withdraw()
+            self.pb.stop()
+        except Exception:
+            pass
+
+    def _close_window(self):
+        self._closed = True
+        self._stop_timers_and_progress()
+        try:
+            self.root.destroy()
         except Exception:
             pass
 
@@ -162,21 +185,27 @@ class StatusUI:
         self.txt.configure(state="disabled")
 
     def close(self):
-        self._closed = True
-        if self._time_after_id is not None:
+        self._close_window()
+
+    def finish(self, status_text: str, keep_open: bool):
+        self._finished = True
+        self._stop_timers_and_progress()
+        try:
+            self.lbl.configure(text=status_text)
+        except Exception:
+            pass
+        if keep_open:
+            self._closed = False
             try:
-                self.root.after_cancel(self._time_after_id)
+                self.root.deiconify()
             except Exception:
                 pass
-            self._time_after_id = None
-        try:
-            self.pb.stop()
-        except Exception:
-            pass
-        try:
-            self.root.destroy()
-        except Exception:
-            pass
+            try:
+                self.btn_close.pack(padx=12, pady=(0, 12), anchor="e")
+            except Exception:
+                pass
+        else:
+            self._closed = True
 
     def mainloop(self):
         self.root.mainloop()
@@ -1629,6 +1658,9 @@ def _is_request_too_large_error(exc: Exception) -> bool:
     msg = str(exc or "").lower()
     return (
         "request too large" in msg
+        or "context_length_exceeded" in msg
+        or "exceeds the context window" in msg
+        or "input exceeds the context window" in msg
         or "tokens per min" in msg
         or ("rate_limit_exceeded" in msg and "requested" in msg)
     )
@@ -1914,6 +1946,15 @@ def main() -> None:
             else:
                 try:
                     data = call_model(content, args.files[0])
+                except SystemExit as e:
+                    if not _is_request_too_large_error(e):
+                        raise
+
+                    _write_log(log_path, f"Reintento automático por tamaño/tokens: {e!r}")
+                    log("Documento grande detectado. Reintentando automáticamente por páginas...")
+                    status("Documento grande: reintentando por páginas...")
+                    retry_units = build_units(force_pdf_page_split=True)
+                    data = run_units(retry_units, "Reintento por página")
                 except Exception as e:
                     if not _is_request_too_large_error(e):
                         raise
@@ -1966,8 +2007,10 @@ def main() -> None:
             if result["error"]:
                 ui.push("STATUS:Error")
                 ui.push(result["error"])
+                ui.finish("Error", keep_open=True)
                 # No cerrar automáticamente: dejar que el usuario cierre la ventana
                 return
+            ui.finish("Listo", keep_open=False)
             time.sleep(0.8)
             ui.close()
 
