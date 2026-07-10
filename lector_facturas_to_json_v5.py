@@ -1261,7 +1261,12 @@ def read_prompt(prompt_file: Optional[str]) -> str:
     if prompt_file:
         p = Path(prompt_file)
         if p.exists():
-            return p.read_text(encoding="utf-8", errors="replace")
+            raw = p.read_bytes()
+            if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+                return raw.decode("utf-16", errors="replace")
+            if raw[:3] == b"\xef\xbb\xbf":
+                return raw[3:].decode("utf-8", errors="replace")
+            return raw.decode("utf-8", errors="replace")
     return DEFAULT_PROMPT
 
 
@@ -1548,11 +1553,18 @@ def main() -> None:
                     args.tile = 3
                     args.per_page = False
                 elif n <= 3:
+                    # Para pocas paginas: enviar todo junto con mas tiles.
+                    # El modelo ve el contexto completo y no hay riesgo de que
+                    # detect_mismatched_invoice_pages descarte paginas continuacion.
                     args.tile = 4
-                    args.per_page = True
+                    args.per_page = False
                 else:
                     args.tile = 5
                     args.per_page = True
+                    # Con muchas paginas de la misma factura, no descartar ninguna
+                    if not args.all_pages:
+                        args.all_pages = True
+                        log("all-pages activado automaticamente por multiples archivos.")
 
             status("Cargando prompt...")
             prompt = PROVIDER_ONLY_PROMPT if args.proveedor else read_prompt(args.prompt_file.strip() or None)
@@ -1598,7 +1610,7 @@ def main() -> None:
                 return data
 
             def run_extraction(model_name: str) -> dict:
-                if len(active_files) > 1:
+                if args.per_page and len(active_files) > 1:
                     page_results: List[dict] = []
                     total_files = len(active_files)
                     t_pages_start = time.time()
