@@ -20,7 +20,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import queue
 import re
+import threading
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -32,6 +36,14 @@ try:
     from pypdf import PdfReader
 except Exception:
     PdfReader = None
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog, ttk
+except Exception:
+    tk = None
+    ttk = None
+    filedialog = None
 
 
 SCHEMA_VERSION = 1
@@ -53,6 +65,140 @@ ACCOUNT_KEYS = [
     "AJUSTES_TARJETA",
     "OTROS",
 ]
+
+
+class StatusUI:
+    """Ventana simple de progreso para el flujo unificado."""
+
+    def __init__(self, title: str = "Procesando movimientos financieros...", width: int = 640, height: int = 320):
+        if tk is None or ttk is None:
+            raise RuntimeError("Tkinter no está disponible en este entorno.")
+
+        self.q: "queue.Queue[str]" = queue.Queue()
+        self.t0 = time.time()
+        self._closed = False
+        self._finished = False
+        self._time_after_id = None
+
+        self.root = tk.Tk()
+        self.root.title(title)
+        self.root.update_idletasks()
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        x = max(0, int((sw - width) / 2))
+        y = max(0, int((sh - height) / 2))
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+        self.root.resizable(False, False)
+
+        self.lbl = ttk.Label(self.root, text="Iniciando...", font=("Segoe UI", 10))
+        self.lbl.pack(padx=12, pady=(12, 4), anchor="w")
+
+        self.lbl_time = ttk.Label(self.root, text="Tiempo: 00:00", font=("Segoe UI", 9))
+        self.lbl_time.pack(padx=12, pady=(0, 6), anchor="w")
+
+        self.pb = ttk.Progressbar(self.root, mode="indeterminate")
+        self.pb.pack(fill="x", padx=12, pady=(0, 10))
+        self.pb.start(10)
+
+        self.txt = tk.Text(self.root, height=12, wrap="word")
+        self.txt.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.txt.configure(state="disabled")
+
+        self.btn_close = ttk.Button(self.root, text="Cerrar", command=self.close)
+        self.btn_close.pack(padx=12, pady=(0, 12), anchor="e")
+        self.btn_close.pack_forget()
+
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.after(100, self._poll)
+        self._time_after_id = self.root.after(200, self._tick_time)
+
+    def _on_close(self) -> None:
+        if self._finished:
+            self.close()
+            return
+        self._closed = True
+        try:
+            self.root.withdraw()
+        except Exception:
+            pass
+
+    def _stop_timers_and_progress(self) -> None:
+        if self._time_after_id is not None:
+            try:
+                self.root.after_cancel(self._time_after_id)
+            except Exception:
+                pass
+            self._time_after_id = None
+        try:
+            self.pb.stop()
+        except Exception:
+            pass
+
+    def _tick_time(self) -> None:
+        if self._closed:
+            return
+        elapsed = int(time.time() - self.t0)
+        mm, ss = divmod(elapsed, 60)
+        try:
+            self.lbl.configure(text=self.lbl.cget("text"))
+            self.lbl_time.configure(text=f"Tiempo: {mm:02d}:{ss:02d}")
+        except Exception:
+            return
+        self._time_after_id = self.root.after(200, self._tick_time)
+
+    def push(self, msg: str) -> None:
+        try:
+            self.q.put_nowait(str(msg))
+        except Exception:
+            pass
+
+    def _append_log(self, s: str) -> None:
+        self.txt.configure(state="normal")
+        self.txt.insert("end", s + "\n")
+        self.txt.see("end")
+        self.txt.configure(state="disabled")
+
+    def _poll(self) -> None:
+        try:
+            while True:
+                msg = self.q.get_nowait()
+                if msg.startswith("STATUS:"):
+                    self.lbl.configure(text=msg.replace("STATUS:", "", 1).strip())
+                else:
+                    self._append_log(msg)
+        except queue.Empty:
+            pass
+        if not self._closed:
+            self.root.after(120, self._poll)
+
+    def finish(self, status_text: str, keep_open_seconds: float = 1.0) -> None:
+        self._finished = True
+        self.push(f"STATUS:{status_text}")
+        self._stop_timers_and_progress()
+        time.sleep(max(0.0, keep_open_seconds))
+        self.close()
+
+    def freeze(self, status_text: str) -> None:
+        self._finished = True
+        self._closed = False
+        self.push(f"STATUS:{status_text}")
+        self._stop_timers_and_progress()
+        try:
+            self.root.deiconify()
+            self.btn_close.pack(padx=12, pady=(0, 12), anchor="e")
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        self._closed = True
+        self._stop_timers_and_progress()
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def mainloop(self) -> None:
+        self.root.mainloop()
 
 
 @dataclass
@@ -729,6 +875,65 @@ def build_control_concepts_output(doc: UnifiedDocument) -> str:
     lines.append("BASE_GASTOS_Y_ARANCELES\tAJUSTE_NETO\tNETO_GRAVADO_TOTAL\tIVA_CREDITO\tIVA_TEORICO_21\tDIFERENCIA")
     lines.append(f"{gasto_neto:.2f}\t{ajuste_neto:.2f}\t{neto_total:.2f}\t{iva_credito:.2f}\t{iva_teorico:.2f}\t{diff:.2f}")
     return "\n".join(lines) + "\n"
+
+
+def _normalize_outdir_arg(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    raw = raw.replace('"', "").strip()
+    raw = re.sub(r"[\\/]+\s*$", "", raw)
+    if raw.startswith("\\\\") and raw.count("\\") < 3:
+        return raw
+    return raw
+
+
+def _ask_user_for_outdir(initial_dir: str = "", parent=None) -> str:
+    if tk is None or filedialog is None:
+        return ""
+    created_root = None
+    try:
+        if parent is None:
+            created_root = tk.Tk()
+            created_root.withdraw()
+            parent = created_root
+        selected = filedialog.askdirectory(
+            parent=parent,
+            title="Elegí una carpeta de salida",
+            initialdir=initial_dir if initial_dir and os.path.isdir(initial_dir) else None,
+            mustexist=False,
+        )
+        return (selected or "").strip()
+    finally:
+        if created_root is not None:
+            try:
+                created_root.destroy()
+            except Exception:
+                pass
+
+
+def _resolve_output_dir(preferred_outdir: str, ui: Optional[StatusUI] = None) -> Path:
+    normalized = _normalize_outdir_arg(preferred_outdir)
+    candidate = Path(normalized) if normalized else Path.cwd()
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+    except Exception as e:
+        message = f"No se pudo usar la carpeta de salida '{candidate}': {e}"
+        if ui:
+            ui.push(message)
+            ui.push("Seleccioná otra carpeta de salida para continuar.")
+        fallback = _ask_user_for_outdir(str(candidate.parent) if candidate.parent != candidate else "", getattr(ui, "root", None))
+        if fallback:
+            fallback_path = Path(_normalize_outdir_arg(fallback))
+            try:
+                fallback_path.mkdir(parents=True, exist_ok=True)
+                if ui:
+                    ui.push(f"Usando nueva carpeta de salida: {fallback_path}")
+                return fallback_path
+            except Exception as e2:
+                raise SystemExit(f"ERROR: No se pudo usar la carpeta elegida: {fallback_path} ({e2})") from e2
+        raise SystemExit(message) from e
 
 
 def write_output_files(doc: UnifiedDocument, outdir: Path, source_file: Path) -> Dict[str, Path]:
@@ -1466,24 +1671,85 @@ def main() -> None:
     )
     parser.add_argument("files", nargs="+", help="Archivos de entrada a inspeccionar")
     parser.add_argument("--outdir", default="", help="Carpeta para guardar JSONs. Si se omite, imprime por stdout.")
+    parser.add_argument("--gui", action="store_true", help="Muestra ventana de progreso y mensajes.")
     args = parser.parse_args()
 
-    docs: List[Dict[str, Any]] = []
-    written: List[Dict[str, Path]] = []
-    for raw_path in args.files:
-        file_path = Path(raw_path)
-        if not file_path.exists():
-            raise SystemExit(f"ERROR: No existe el archivo: {raw_path}")
-        doc = enrich_document(file_path)
-        docs.append(document_to_dict(doc))
-        if args.outdir:
-            written.append(write_output_files(doc, Path(args.outdir), file_path))
+    ui: Optional[StatusUI] = None
+    if args.gui:
+        try:
+            ui = StatusUI()
+            ui.push("STATUS:Inicializando...")
+        except Exception:
+            ui = None
+
+    def log(msg: str) -> None:
+        if ui:
+            ui.push(msg)
+
+    def status(msg: str) -> None:
+        if ui:
+            ui.push(f"STATUS:{msg}")
+
+    result: Dict[str, Any] = {"docs": [], "written": [], "error": None, "resolved_outdir": None}
+
+    def worker() -> None:
+        try:
+            docs: List[Dict[str, Any]] = []
+            written: List[Dict[str, Path]] = []
+            resolved_outdir: Optional[Path] = None
+            if args.outdir:
+                status("Preparando carpeta de salida...")
+                resolved_outdir = _resolve_output_dir(args.outdir, ui=ui)
+                result["resolved_outdir"] = resolved_outdir
+                log(f"Salida: {resolved_outdir}")
+
+            for idx, raw_path in enumerate(args.files, start=1):
+                file_path = Path(raw_path)
+                status(f"Analizando archivo {idx}/{len(args.files)}...")
+                log(f"Archivo: {file_path}")
+                if not file_path.exists():
+                    raise SystemExit(f"ERROR: No existe el archivo: {raw_path}")
+
+                doc = enrich_document(file_path)
+                docs.append(document_to_dict(doc))
+                log(
+                    f"Detectado: tipo={doc.document_type} banco={doc.institution or '-'} "
+                    f"tarjeta={doc.card_brand or '-'} periodo={doc.period or '-'}"
+                )
+                if resolved_outdir is not None:
+                    status(f"Guardando salida {idx}/{len(args.files)}...")
+                    written.append(write_output_files(doc, resolved_outdir, file_path))
+
+            result["docs"] = docs
+            result["written"] = written
+        except BaseException as e:
+            result["error"] = str(e)
+
+        if ui:
+            if result["error"]:
+                ui.push(result["error"])
+                ui.freeze("Error")
+            else:
+                ui.finish("Listo", keep_open_seconds=1.0)
+
+    if ui:
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        ui.mainloop()
+    else:
+        worker()
+
+    if result["error"]:
+        raise SystemExit(result["error"])
+
+    docs = result["docs"]
+    written = result["written"]
 
     if args.outdir:
         if len(written) == 1:
             print(str(written[0]["txt_path"]))
         else:
-            print(str(Path(args.outdir)))
+            print(str(result["resolved_outdir"] or _normalize_outdir_arg(args.outdir)))
         return
 
     if len(docs) == 1:

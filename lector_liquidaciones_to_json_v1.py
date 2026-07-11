@@ -28,6 +28,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import threading
@@ -230,6 +231,101 @@ def load_env_near_app() -> None:
     else:
         # igual intentamos por si hay .env en cwd
         load_dotenv(override=False)
+
+
+def _read_pdf_sample(file_path: str, max_pages: int = 3) -> str:
+    if PdfReader is None:
+        return ""
+    try:
+        reader = PdfReader(file_path)
+    except Exception:
+        return ""
+
+    chunks: List[str] = []
+    for page in reader.pages[: max(1, int(max_pages))]:
+        try:
+            chunks.append(page.extract_text() or "")
+        except Exception:
+            continue
+    return "\n".join(chunks)
+
+
+def _should_delegate_to_unified_bank_reader(file_path: str) -> bool:
+    ext = Path(file_path).suffix.lower()
+    if ext != ".pdf":
+        return False
+
+    sample = _read_pdf_sample(file_path, max_pages=3)
+    probe = re.sub(r"\s+", " ", ((sample or "") + "\n" + Path(file_path).name).upper())
+    if not probe:
+        return False
+
+    has_bank_markers = any(
+        marker in probe
+        for marker in [
+            "RESUMEN DE CUENTA",
+            "CUENTA CORRIENTE",
+            "MOVIMIENTOS",
+            "CREDITO",
+            "DEBITO",
+            "SALDOS",
+        ]
+    )
+    has_card_settlement_markers = any(
+        marker in probe
+        for marker in [
+            "TOTAL PRESENTADO",
+            "NETO DE PAGOS",
+            "NETO PERCIBIDO",
+            "DESGLOSE DE DESCUENTOS",
+            "DETALLE DE DESCUENTOS",
+            "RESUMEN MENSUAL DE LIQUIDACIONES",
+        ]
+    )
+    has_known_bank = any(
+        marker in probe
+        for marker in [
+            "GALICIA",
+            "BANCO PATAGONIA",
+            "BANCO DE LA NACION ARGENTINA",
+            "BANCO NACION",
+            "SANTANDER",
+        ]
+    )
+    return has_bank_markers and has_known_bank and not has_card_settlement_markers
+
+
+def _delegate_to_unified_bank_reader(file_path: str, outdir: str, log_fn=None) -> str:
+    base_dir = app_dir()
+    exe_path = base_dir / "lector_movimientos_financieros_unificado.exe"
+    script_path = base_dir / "lector_movimientos_financieros_unificado.py"
+
+    cmd: List[str]
+    if exe_path.exists():
+        cmd = [str(exe_path), file_path, "--outdir", outdir]
+    elif script_path.exists():
+        cmd = [sys.executable, str(script_path), file_path, "--outdir", outdir]
+    else:
+        raise SystemExit(
+            "ERROR: El PDF parece un extracto bancario, pero no se encontró lector_movimientos_financieros_unificado.exe"
+        )
+
+    if callable(log_fn):
+        log_fn("Documento detectado como extracto bancario. Derivando al lector unificado...")
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+    except Exception as e:
+        raise SystemExit(f"ERROR: No se pudo ejecutar lector_movimientos_financieros_unificado: {e}") from e
+
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        detail = stderr or stdout or f"código {proc.returncode}"
+        raise SystemExit(f"ERROR lector unificado: {detail}")
+    if not stdout:
+        raise SystemExit("ERROR lector unificado: no devolvió la ruta del TXT.")
+    return stdout.splitlines()[-1].strip()
 
 
 def apply_runtime_env_overrides(args: argparse.Namespace) -> None:
@@ -1809,8 +1905,6 @@ def main() -> None:
                 if not Path(f).exists():
                     raise SystemExit(f"ERROR: No existe el archivo: {f}")
 
-            pdf_totals = _extract_pdf_totals(args.files)
-
             # Auto-ajuste según páginas reales (si se puede leer el PDF).
             if args.auto:
                 effective_pages = 0
@@ -1854,145 +1948,157 @@ def main() -> None:
             result["log_path"] = str(log_path)
             _write_log(log_path, f"Inicio proceso. Archivos: {', '.join(args.files)}")
 
-            _write_log(
-                log_path,
-                "PDF totals preload: "
-                + f"bank_nacion={bool(pdf_totals.get('bank_nacion'))} "
-                + f"bank_patagonia={bool(pdf_totals.get('bank_patagonia'))} "
-                + f"bank_name={pdf_totals.get('bank_name')} "
-                + f"card_name={pdf_totals.get('card_name')} "
-                + f"period={pdf_totals.get('period')} "
-                + f"has_daily={bool(pdf_totals.get('has_daily'))} "
-                + f"daily_rows={len(pdf_totals.get('daily_rows') or [])} "
-                + f"total_presentado={pdf_totals.get('total_presentado')} "
-                + f"neto_header={pdf_totals.get('neto_header')}",
-            )
-            if Path(args.files[0]).suffix.lower() == '.pdf':
-                _write_log(log_path, 'PDF reader diag: ' + _pdf_reader_diagnostic(args.files[0]))
-            status("Cargando prompt...")
-            prompt = read_prompt(args.prompt_file.strip() or None)
-            if "concepto|total" not in prompt.lower():
-                prompt = "Respondé solo con texto en formato CONCEPTO|TOTAL.\n" + prompt
-            _write_log(
-                log_path,
-                f"Modelo: {args.model} | per-page: {args.per_page} | tile: {args.tile} | pdf-chunk-pages: {args.pdf_chunk_pages}",
-            )
-            if Path(args.files[0]).suffix.lower() == '.pdf':
-                _write_log(log_path, 'PDF reader diag: ' + _pdf_reader_diagnostic(args.files[0]))
+            delegated_out = None
+            if len(args.files) == 1 and _should_delegate_to_unified_bank_reader(args.files[0]):
+                status("Detectando extracto bancario...")
+                delegated_out = _delegate_to_unified_bank_reader(args.files[0], str(outdir), log_fn=log)
+                _write_log(log_path, f"Delegado a lector unificado. Salida: {delegated_out}")
+                result["out_path"] = delegated_out
+                status("Listo")
+                log(f"Generado: {delegated_out}")
 
-            status("Armando contenido...")
-            log(
-                f"Modelo: {args.model} | per-page: {args.per_page} | tile: {args.tile} | pdf-chunk-pages: {args.pdf_chunk_pages}"
-            )
-            content = [{"type": "input_text", "text": prompt}]
-            total_files = len(args.files)
-            for i, f in enumerate(args.files, start=1):
-                status(f"Adjuntando página {i}/{total_files}...")
-                log(f"Archivo: {f}")
-                content.extend(file_to_content_blocks(f, args.tile, args.pdf_chunk_pages))
+            if delegated_out is None:
+                pdf_totals = _extract_pdf_totals(args.files)
 
-            status("Analizando con Inteligencia Artificial...")
-            log("Motor IA: Activo")
-            def call_model(content_blocks: List[Dict[str, Any]], source_file: str) -> str:
-                out_text = call_backend(
-                    content_blocks=content_blocks,
-                    model=args.model,
-                    max_output_tokens=4000,
-                    source_filename=Path(source_file).name,
+                _write_log(
+                    log_path,
+                    "PDF totals preload: "
+                    + f"bank_nacion={bool(pdf_totals.get('bank_nacion'))} "
+                    + f"bank_patagonia={bool(pdf_totals.get('bank_patagonia'))} "
+                    + f"bank_name={pdf_totals.get('bank_name')} "
+                    + f"card_name={pdf_totals.get('card_name')} "
+                    + f"period={pdf_totals.get('period')} "
+                    + f"has_daily={bool(pdf_totals.get('has_daily'))} "
+                    + f"daily_rows={len(pdf_totals.get('daily_rows') or [])} "
+                    + f"total_presentado={pdf_totals.get('total_presentado')} "
+                    + f"neto_header={pdf_totals.get('neto_header')}",
                 )
+                if Path(args.files[0]).suffix.lower() == '.pdf':
+                    _write_log(log_path, 'PDF reader diag: ' + _pdf_reader_diagnostic(args.files[0]))
+                status("Cargando prompt...")
+                prompt = read_prompt(args.prompt_file.strip() or None)
+                if "concepto|total" not in prompt.lower():
+                    prompt = "Respondé solo con texto en formato CONCEPTO|TOTAL.\n" + prompt
+                _write_log(
+                    log_path,
+                    f"Modelo: {args.model} | per-page: {args.per_page} | tile: {args.tile} | pdf-chunk-pages: {args.pdf_chunk_pages}",
+                )
+                if Path(args.files[0]).suffix.lower() == '.pdf':
+                    _write_log(log_path, 'PDF reader diag: ' + _pdf_reader_diagnostic(args.files[0]))
 
-                if not out_text.strip():
-                    raise SystemExit("ERROR: Respuesta vacía del modelo.")
+                status("Armando contenido...")
+                log(
+                    f"Modelo: {args.model} | per-page: {args.per_page} | tile: {args.tile} | pdf-chunk-pages: {args.pdf_chunk_pages}"
+                )
+                content = [{"type": "input_text", "text": prompt}]
+                total_files = len(args.files)
+                for i, f in enumerate(args.files, start=1):
+                    status(f"Adjuntando página {i}/{total_files}...")
+                    log(f"Archivo: {f}")
+                    content.extend(file_to_content_blocks(f, args.tile, args.pdf_chunk_pages))
 
-                return out_text.strip()
+                status("Analizando con Inteligencia Artificial...")
+                log("Motor IA: Activo")
+                def call_model(content_blocks: List[Dict[str, Any]], source_file: str) -> str:
+                    out_text = call_backend(
+                        content_blocks=content_blocks,
+                        model=args.model,
+                        max_output_tokens=4000,
+                        source_filename=Path(source_file).name,
+                    )
 
-            def build_units(force_pdf_page_split: bool = False) -> List[tuple[str, List[Dict[str, Any]]]]:
-                units: List[tuple[str, List[Dict[str, Any]]]] = []
-                for f in args.files:
-                    ext = Path(f).suffix.lower()
-                    if ext == ".pdf" and (force_pdf_page_split or args.per_page):
-                        chunk = 1 if force_pdf_page_split else (args.pdf_chunk_pages if args.pdf_chunk_pages > 0 else 1)
-                        pdf_blocks = _pdf_to_chunked_blocks(f, chunk)
-                        for b in pdf_blocks:
-                            units.append((f, [b]))
-                    else:
-                        units.append((f, file_to_content_blocks(f, args.tile, args.pdf_chunk_pages)))
-                return units
+                    if not out_text.strip():
+                        raise SystemExit("ERROR: Respuesta vacía del modelo.")
 
-            def run_units(units: List[tuple[str, List[Dict[str, Any]]]], status_label: str) -> str:
-                page_results: List[str] = []
-                total_units = len(units)
-                t_units_start = time.time()
-                for i, (src, blocks) in enumerate(units, start=1):
-                    if i > 1:
-                        elapsed = time.time() - t_units_start
-                        avg = elapsed / (i - 1)
-                        remaining = avg * (total_units - i + 1)
-                        mm = int(remaining // 60)
-                        ss = int(remaining % 60)
-                        status(f"{status_label} {i}/{total_units}... (ETA ~{mm:02d}:{ss:02d})")
-                    else:
-                        status(f"{status_label} {i}/{total_units}...")
-                    log(f"Unidad {i}/{total_units}: {src}")
-                    unit_content = [{"type": "input_text", "text": prompt}]
-                    unit_content.extend(blocks)
-                    page_results.append(call_model(unit_content, src))
-                return "\n".join([t for t in page_results if t.strip()])
+                    return out_text.strip()
 
-            units = build_units(force_pdf_page_split=False)
-            if args.per_page and len(units) > 1:
-                page_results: List[str] = []
-                data = run_units(units, "IA por página/bloque")
-            else:
-                try:
-                    data = call_model(content, args.files[0])
-                except SystemExit as e:
-                    if not _is_request_too_large_error(e):
-                        raise
+                def build_units(force_pdf_page_split: bool = False) -> List[tuple[str, List[Dict[str, Any]]]]:
+                    units: List[tuple[str, List[Dict[str, Any]]]] = []
+                    for f in args.files:
+                        ext = Path(f).suffix.lower()
+                        if ext == ".pdf" and (force_pdf_page_split or args.per_page):
+                            chunk = 1 if force_pdf_page_split else (args.pdf_chunk_pages if args.pdf_chunk_pages > 0 else 1)
+                            pdf_blocks = _pdf_to_chunked_blocks(f, chunk)
+                            for b in pdf_blocks:
+                                units.append((f, [b]))
+                        else:
+                            units.append((f, file_to_content_blocks(f, args.tile, args.pdf_chunk_pages)))
+                    return units
 
-                    _write_log(log_path, f"Reintento automático por tamaño/tokens: {e!r}")
-                    log("Documento grande detectado. Reintentando automáticamente por páginas...")
-                    status("Documento grande: reintentando por páginas...")
-                    retry_units = build_units(force_pdf_page_split=True)
-                    data = run_units(retry_units, "Reintento por página")
-                except Exception as e:
-                    if not _is_request_too_large_error(e):
-                        raise
+                def run_units(units: List[tuple[str, List[Dict[str, Any]]]], status_label: str) -> str:
+                    page_results: List[str] = []
+                    total_units = len(units)
+                    t_units_start = time.time()
+                    for i, (src, blocks) in enumerate(units, start=1):
+                        if i > 1:
+                            elapsed = time.time() - t_units_start
+                            avg = elapsed / (i - 1)
+                            remaining = avg * (total_units - i + 1)
+                            mm = int(remaining // 60)
+                            ss = int(remaining % 60)
+                            status(f"{status_label} {i}/{total_units}... (ETA ~{mm:02d}:{ss:02d})")
+                        else:
+                            status(f"{status_label} {i}/{total_units}...")
+                        log(f"Unidad {i}/{total_units}: {src}")
+                        unit_content = [{"type": "input_text", "text": prompt}]
+                        unit_content.extend(blocks)
+                        page_results.append(call_model(unit_content, src))
+                    return "\n".join([t for t in page_results if t.strip()])
 
-                    _write_log(log_path, f"Reintento automático por tamaño/tokens: {e!r}")
-                    log("Documento grande detectado. Reintentando automáticamente por páginas...")
-                    status("Documento grande: reintentando por páginas...")
-                    retry_units = build_units(force_pdf_page_split=True)
-                    data = run_units(retry_units, "Reintento por página")
+                units = build_units(force_pdf_page_split=False)
+                if args.per_page and len(units) > 1:
+                    page_results: List[str] = []
+                    data = run_units(units, "IA por página/bloque")
+                else:
+                    try:
+                        data = call_model(content, args.files[0])
+                    except SystemExit as e:
+                        if not _is_request_too_large_error(e):
+                            raise
 
-            data = _postprocess_output(str(data))
-            data = _apply_pdf_overrides(data, pdf_totals, Path(result["log_path"]) if result.get("log_path") else None)
+                        _write_log(log_path, f"Reintento automático por tamaño/tokens: {e!r}")
+                        log("Documento grande detectado. Reintentando automáticamente por páginas...")
+                        status("Documento grande: reintentando por páginas...")
+                        retry_units = build_units(force_pdf_page_split=True)
+                        data = run_units(retry_units, "Reintento por página")
+                    except Exception as e:
+                        if not _is_request_too_large_error(e):
+                            raise
 
-            status("Guardando TXT...")
-            out_path = Path(outdir) / f"{source_stem}.txt"
-            try:
-                out_path.write_text(str(data).strip() + "\n", encoding="utf-8")
-            except Exception:
-                if requested_outdir:
-                    raise SystemExit(f"ERROR: No se pudo guardar el TXT en outdir solicitado: {requested_outdir}")
-                # fallback: carpeta del archivo de entrada; último recurso TEMP
-                outdir = _ensure_writable_outdir_with_file_fallback("", args.files[0])
+                        _write_log(log_path, f"Reintento automático por tamaño/tokens: {e!r}")
+                        log("Documento grande detectado. Reintentando automáticamente por páginas...")
+                        status("Documento grande: reintentando por páginas...")
+                        retry_units = build_units(force_pdf_page_split=True)
+                        data = run_units(retry_units, "Reintento por página")
+
+                data = _postprocess_output(str(data))
+                data = _apply_pdf_overrides(data, pdf_totals, Path(result["log_path"]) if result.get("log_path") else None)
+
+                status("Guardando TXT...")
                 out_path = Path(outdir) / f"{source_stem}.txt"
-                out_path.write_text(str(data).strip() + "\n", encoding="utf-8")
-            _write_log(log_path, f"Salida generada: {out_path}")
+                try:
+                    out_path.write_text(str(data).strip() + "\n", encoding="utf-8")
+                except Exception:
+                    if requested_outdir:
+                        raise SystemExit(f"ERROR: No se pudo guardar el TXT en outdir solicitado: {requested_outdir}")
+                    # fallback: carpeta del archivo de entrada; último recurso TEMP
+                    outdir = _ensure_writable_outdir_with_file_fallback("", args.files[0])
+                    out_path = Path(outdir) / f"{source_stem}.txt"
+                    out_path.write_text(str(data).strip() + "\n", encoding="utf-8")
+                _write_log(log_path, f"Salida generada: {out_path}")
 
-            control_path = _write_daily_control_file(
-                outdir,
-                source_stem,
-                pdf_totals.get("daily_rows") or [],
-                bool(pdf_totals.get("bank_nacion")),
-            )
-            if control_path:
-                _write_log(log_path, f"Control diario generado: {control_path}")
+                control_path = _write_daily_control_file(
+                    outdir,
+                    source_stem,
+                    pdf_totals.get("daily_rows") or [],
+                    bool(pdf_totals.get("bank_nacion")),
+                )
+                if control_path:
+                    _write_log(log_path, f"Control diario generado: {control_path}")
 
-            result["out_path"] = str(out_path)
-            status("Listo")
-            log(f"Generado: {out_path}")
+                result["out_path"] = str(out_path)
+                status("Listo")
+                log(f"Generado: {out_path}")
 
         except SystemExit as e:
             result["error"] = str(e)
