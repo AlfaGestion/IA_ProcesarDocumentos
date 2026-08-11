@@ -123,6 +123,7 @@ class StatusUI:
 
         self.q: "queue.Queue[str]" = queue.Queue()
         self.t0 = time.time()
+        self._finished = False
         self._closed = False
         self._time_after_id = None
 
@@ -149,18 +150,40 @@ class StatusUI:
         self.txt.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self.txt.configure(state="disabled")
 
+        self.btn_close = ttk.Button(self.root, text="Cerrar", command=self._close_window)
+        self.btn_close.pack(padx=12, pady=(0, 12), anchor="e")
+        self.btn_close.pack_forget()
+
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._poll)
         self._time_after_id = self.root.after(200, self._tick_time)
 
     def _on_close(self) -> None:
+        if self._finished:
+            self._close_window()
+            return
+
         self._closed = True
+        try:
+            self.root.withdraw()
+        except Exception:
+            pass
+
+    def _stop_timers_and_progress(self) -> None:
         if self._time_after_id is not None:
             try:
                 self.root.after_cancel(self._time_after_id)
             except Exception:
                 pass
             self._time_after_id = None
+        try:
+            self.pb.stop()
+        except Exception:
+            pass
+
+    def _close_window(self) -> None:
+        self._closed = True
+        self._stop_timers_and_progress()
         try:
             self.root.destroy()
         except Exception:
@@ -207,17 +230,27 @@ class StatusUI:
             self.q.put(str(s))
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+        self._close_window()
+
+    def finish(self, status_text: str, keep_open: bool) -> None:
+        self._finished = True
+        self._stop_timers_and_progress()
         try:
-            self.pb.stop()
+            self.lbl.config(text=status_text)
         except Exception:
             pass
-        try:
-            self.root.destroy()
-        except Exception:
-            pass
+        if keep_open:
+            self._closed = False
+            try:
+                self.root.deiconify()
+            except Exception:
+                pass
+            try:
+                self.btn_close.pack(padx=12, pady=(0, 12), anchor="e")
+            except Exception:
+                pass
+        else:
+            self._closed = True
 
     def mainloop(self) -> None:
         self.root.mainloop()
@@ -1123,7 +1156,9 @@ def main() -> None:
                 if result["error"]:
                     ui.push("STATUS:Error")
                     ui.push(result["error"])
+                    ui.finish("Error", keep_open=True)
                     return
+                ui.finish("Listo", keep_open=False)
                 time.sleep(0.8)
                 ui.close()
             if staged_tmp is not None:
