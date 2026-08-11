@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -731,8 +732,25 @@ def build_control_concepts_output(doc: UnifiedDocument) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _prepare_output_dir(outdir: Path) -> Path:
+    raw = str(outdir).strip().replace('"', "")
+    output_dir = Path(raw)
+    if os.path.isdir(raw):
+        return output_dir
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        if os.path.isdir(raw):
+            return output_dir
+        raise OSError(
+            f"No se pudo acceder a la carpeta de salida: {raw}. "
+            "Verifique que el recurso de red este disponible para el usuario que ejecuta el proceso."
+        ) from exc
+    return output_dir
+
+
 def write_output_files(doc: UnifiedDocument, outdir: Path, source_file: Path) -> Dict[str, Path]:
-    outdir.mkdir(parents=True, exist_ok=True)
+    outdir = _prepare_output_dir(outdir)
     base = source_file.stem
     json_path = outdir / f"{base}.unificado.json"
     txt_path = outdir / f"{base}.txt"
@@ -844,6 +862,96 @@ def _signed_amount_for_category(category: str, raw_amount: float) -> float:
     if category == "TARJETA":
         return amount
     return -amount
+
+
+def _extract_bank_tax_summary(page_texts: List[str]) -> Dict[str, float]:
+    text = "\n".join(page_texts or [])
+    if "SITUACION IMPOSITIVA" not in _norm_text(text):
+        return {}
+
+    money = r"\d{1,3}(?:\.\d{3})*,\d{2}"
+    summary: Dict[str, float] = {}
+
+    def read_net(label_pattern: str) -> Optional[float]:
+        pattern = (
+            rf"TOTAL\s+\d+\s*/\s*20\d{{2}}\s+{label_pattern}\s+"
+            rf"({money})\s+({money})\s+({money})"
+        )
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        return bank_xls._parse_ar_number(match.group(3))
+
+    iva = read_net(r"IVA\s+ALICUOTA\s+GENERAL")
+    if iva is not None:
+        summary["IVA_CREDITO"] = iva
+
+    ret_iva = read_net(r"IVA\s+PERCEPCION")
+    if ret_iva is not None:
+        summary["RET_IVA"] = ret_iva
+
+    iibb = read_net(r"RECAUD\s+IIBB\s+SIRCREB(?:\s+CUIT\s+\d+)?")
+    if iibb is not None:
+        summary["RET_IIBB"] = iibb
+
+    idc_total = read_net(r"IMP\.?\s*DEB\s*/\s*CRED\.?\s*BANC\.?")
+    if idc_total is not None:
+        summary["IDC_TOTAL"] = idc_total
+
+    match = re.search(
+        rf"IMP\.\s*COMPUTABLE\.?\s*DEB\s*/\s*CRED\.?\s*BANC\.?\s*C\.?CTES\s*\$\s*({money})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        summary["IDC_A_COMPUTAR"] = bank_xls._parse_ar_number(match.group(1))
+    elif idc_total is not None:
+        summary["IDC_A_COMPUTAR"] = idc_total
+
+    return summary
+
+
+def _apply_bank_tax_summary_override(doc: UnifiedDocument, page_texts: List[str]) -> None:
+    summary = _extract_bank_tax_summary(page_texts)
+    if not summary:
+        doc.trace.notes.append("bank_tax_summary=not_found")
+        return
+
+    labels = {
+        "IVA_CREDITO": "IVA ALICUOTA GENERAL",
+        "RET_IVA": "IVA PERCEPCION",
+        "RET_IIBB": "RECAUD IIBB SIRCREB",
+        "IDC_A_COMPUTAR": "IMP. COMPUTABLE DEB/CRED BANC C.CTES",
+    }
+    applied: List[str] = []
+    for category, label in labels.items():
+        if category not in summary:
+            continue
+        authoritative = -abs(float(summary[category]))
+        current = round(float(doc.totals.get(category, 0.0)), 2)
+        diff = round(authoritative - current, 2)
+        doc.totals[category] = round(authoritative, 2)
+        applied.append(f"{category}={abs(authoritative):.2f}")
+        if abs(diff) >= 0.005:
+            doc.items.append(
+                MovementItem(
+                    date=None,
+                    description=f"AJUSTE SITUACION IMPOSITIVA - {label}",
+                    raw_amount=abs(diff),
+                    signed_amount=diff,
+                    direction=_detect_direction(diff),
+                    channel="tax_summary",
+                    category=category,
+                    confidence=1.0,
+                    source_section="situacion_impositiva",
+                )
+            )
+
+    subtotal = sum(float(value) for key, value in doc.totals.items() if key != "BANCO")
+    doc.totals["BANCO"] = round(-subtotal, 2)
+    if summary.get("IDC_TOTAL") is not None:
+        doc.trace.notes.append(f"bank_tax_summary_idc_total={float(summary['IDC_TOTAL']):.2f}")
+    doc.trace.notes.append("bank_tax_summary_applied=" + ",".join(applied))
 
 
 def _totals_from_card_daily_rows(daily_rows: List[Dict[str, Any]]) -> Dict[str, float]:
@@ -1293,6 +1401,7 @@ def populate_from_bank_pdf(doc: UnifiedDocument, file_path: Path) -> UnifiedDocu
             "Conceptos PDF no clasificados: " + "; ".join(f"{desc} ({count})" for desc, count in top_unknown)
         )
         doc.summary.needs_review = True
+    _apply_bank_tax_summary_override(doc, page_texts)
     apply_iva_net_adjustment(doc)
     doc.proposed_entry = _build_proposed_entry_from_totals(doc.totals)
     return doc
@@ -1466,6 +1575,7 @@ def main() -> None:
     )
     parser.add_argument("files", nargs="+", help="Archivos de entrada a inspeccionar")
     parser.add_argument("--outdir", default="", help="Carpeta para guardar JSONs. Si se omite, imprime por stdout.")
+    parser.add_argument("--gui", action="store_true", help="Compatibilidad con llamadores existentes; no abre ventana.")
     args = parser.parse_args()
 
     docs: List[Dict[str, Any]] = []
