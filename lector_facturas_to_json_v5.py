@@ -178,17 +178,35 @@ class StatusUI:
         self.close_btn.pack(side="right", padx=(0, 8))
 
         self._closed = False
+        self._finished = False
         self._retry_callback = None
+        self._time_after_id = None
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.root.after(100, self._poll)
-        self.root.after(200, self._tick_time)
+        self._time_after_id = self.root.after(200, self._tick_time)
 
     def _on_close(self):
+        if self._finished:
+            self.close()
+            return
+
         # Si cierran la ventana, no matamos el proceso; solo ocultamos.
         self._closed = True
         try:
             self.root.withdraw()
+        except Exception:
+            pass
+
+    def _stop_timers_and_progress(self):
+        if self._time_after_id is not None:
+            try:
+                self.root.after_cancel(self._time_after_id)
+            except Exception:
+                pass
+            self._time_after_id = None
+        try:
+            self.pb.stop()
         except Exception:
             pass
 
@@ -198,7 +216,7 @@ class StatusUI:
             mm = secs // 60
             ss = secs % 60
             self.lbl_time.configure(text=f"Tiempo: {mm:02d}:{ss:02d}")
-            self.root.after(200, self._tick_time)
+            self._time_after_id = self.root.after(200, self._tick_time)
 
     def push(self, msg: str):
         """Seguro desde cualquier hilo."""
@@ -229,10 +247,7 @@ class StatusUI:
 
     def close(self):
         self._closed = True
-        try:
-            self.pb.stop()
-        except Exception:
-            pass
+        self._stop_timers_and_progress()
         try:
             self.root.destroy()
         except Exception:
@@ -243,13 +258,21 @@ class StatusUI:
 
     def finish(self, status_text: str, keep_open_seconds: float = 2.5):
         """Muestra estado final unos segundos para que alcance a verse."""
+        self._finished = True
         self.push(f"STATUS:{status_text}")
-        try:
-            self.pb.stop()
-        except Exception:
-            pass
+        self._stop_timers_and_progress()
         time.sleep(max(0.0, keep_open_seconds))
         self.close()
+
+    def freeze(self, status_text: str) -> None:
+        self._finished = True
+        self._stop_timers_and_progress()
+        self._closed = False
+        self.push(f"STATUS:{status_text}")
+        try:
+            self.root.after(0, self.root.deiconify)
+        except Exception:
+            pass
 
     def set_retry_callback(self, callback) -> None:
         self._retry_callback = callback
@@ -289,17 +312,16 @@ class StatusUI:
         def _reset():
             if self._closed:
                 return
+            self._finished = False
             self.t0 = time.time()
             self.lbl.configure(text=status_text)
             self.lbl_time.configure(text="Tiempo: 00:00")
-            try:
-                self.pb.stop()
-            except Exception:
-                pass
+            self._stop_timers_and_progress()
             try:
                 self.pb.start(10)
             except Exception:
                 pass
+            self._time_after_id = self.root.after(200, self._tick_time)
 
         try:
             self.root.after(0, _reset)
@@ -1261,7 +1283,12 @@ def read_prompt(prompt_file: Optional[str]) -> str:
     if prompt_file:
         p = Path(prompt_file)
         if p.exists():
-            return p.read_text(encoding="utf-8", errors="replace")
+            raw = p.read_bytes()
+            if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+                return raw.decode("utf-16", errors="replace")
+            if raw[:3] == b"\xef\xbb\xbf":
+                return raw[3:].decode("utf-8", errors="replace")
+            return raw.decode("utf-8", errors="replace")
     return DEFAULT_PROMPT
 
 
@@ -1548,11 +1575,18 @@ def main() -> None:
                     args.tile = 3
                     args.per_page = False
                 elif n <= 3:
+                    # Para pocas paginas: enviar todo junto con mas tiles.
+                    # El modelo ve el contexto completo y no hay riesgo de que
+                    # detect_mismatched_invoice_pages descarte paginas continuacion.
                     args.tile = 4
-                    args.per_page = True
+                    args.per_page = False
                 else:
                     args.tile = 5
                     args.per_page = True
+                    # Con muchas paginas de la misma factura, no descartar ninguna
+                    if not args.all_pages:
+                        args.all_pages = True
+                        log("all-pages activado automaticamente por multiples archivos.")
 
             status("Cargando prompt...")
             prompt = PROVIDER_ONLY_PROMPT if args.proveedor else read_prompt(args.prompt_file.strip() or None)
@@ -1598,7 +1632,7 @@ def main() -> None:
                 return data
 
             def run_extraction(model_name: str) -> dict:
-                if len(active_files) > 1:
+                if args.per_page and len(active_files) > 1:
                     page_results: List[dict] = []
                     total_files = len(active_files)
                     t_pages_start = time.time()
@@ -1736,6 +1770,7 @@ def main() -> None:
             if result["error"]:
                 ui.push("STATUS:Error ❌")
                 ui.push(result["error"])
+                ui.freeze("Error ❌")
                 ui.set_retry_enabled(True)
             else:
                 ui.push("Proceso finalizado correctamente.")
