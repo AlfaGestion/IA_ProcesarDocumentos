@@ -139,6 +139,7 @@ Esto refuerza que el backend tiene suficientes datos para auditoría por cliente
 |---|---|
 | `--outdir DIR` | Carpeta de salida. Default: carpeta TEMP del sistema. |
 | `--prompt-file FILE` | Archivo `.txt` con prompt personalizado. Reemplaza el prompt por defecto. No aplica con `--proveedor`. |
+| `--prompt-extra TEXTO` | Contexto adicional anexado al prompt base. Lo usa AlfaCore para pasar referencias u observaciones del documento. No aplica con `--proveedor`. |
 
 ### Estrategia de extracción
 
