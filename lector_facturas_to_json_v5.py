@@ -1420,6 +1420,11 @@ def main() -> None:
     )
     parser.add_argument("--outdir", default="", help="Carpeta de salida. Default: TEMP del sistema")
     parser.add_argument("--prompt-file", default="", help="Archivo .txt con prompt personalizado")
+    parser.add_argument(
+        "--prompt-extra",
+        default="",
+        help="Texto adicional de contexto para anexar al prompt base.",
+    )
     parser.add_argument("--model", default="gpt-4.1-mini", help="Modelo a usar (default: gpt-4.1-mini)")
     parser.add_argument(
         "--fallback-model",
@@ -1597,6 +1602,13 @@ def main() -> None:
 
             status("Cargando prompt...")
             prompt = PROVIDER_ONLY_PROMPT if args.proveedor else read_prompt(args.prompt_file.strip() or None)
+            prompt_extra = (args.prompt_extra or "").strip()
+            if prompt_extra and not args.proveedor:
+                prompt = (
+                    f"{prompt.rstrip()}\n\n"
+                    "CONTEXTO ADICIONAL DEL USUARIO / SISTEMA:\n"
+                    f"{prompt_extra}\n"
+                )
 
             if 'json' not in prompt.lower():
                 prompt = 'Responde solo con json.\n' + prompt
