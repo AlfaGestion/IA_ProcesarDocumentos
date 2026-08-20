@@ -1,12 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_submodules
+
+datas = [('reglas_gastos_bancarios_v1.json', '.')]
+hiddenimports = []
+datas += collect_data_files('pypdf')
+hiddenimports += collect_submodules('pypdf')
 
 
 a = Analysis(
     ['lector_movimientos_financieros_unificado.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

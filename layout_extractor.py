@@ -35,9 +35,13 @@ except ImportError:
     ImageOps = None
 
 try:
-    import fitz  # pymupdf
+    import pymupdf as fitz
 except ImportError:
-    fitz = None
+    try:
+        import importlib
+        fitz = importlib.import_module("fitz")  # compatibilidad con PyMuPDF antiguo
+    except ImportError:
+        fitz = None
 
 try:
     import pdfplumber
