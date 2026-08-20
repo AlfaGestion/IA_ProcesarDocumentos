@@ -139,6 +139,7 @@ Esto refuerza que el backend tiene suficientes datos para auditoría por cliente
 |---|---|
 | `--outdir DIR` | Carpeta de salida. Default: carpeta TEMP del sistema. |
 | `--prompt-file FILE` | Archivo `.txt` con prompt personalizado. Reemplaza el prompt por defecto. No aplica con `--proveedor`. |
+| `--prompt-extra TEXTO` | Contexto adicional anexado al prompt base. Lo usa AlfaCore para pasar referencias u observaciones del documento. No aplica con `--proveedor`. |
 
 ### Estrategia de extracción
 
@@ -171,7 +172,7 @@ Esto refuerza que el backend tiene suficientes datos para auditoría por cliente
 | Parámetro | Descripción |
 |---|---|
 | `--per-page` | Procesa cada archivo/página por separado con IA y luego unifica filas. Mejora extracción en tablas largas o facturas multipágina. |
-| `--auto` | Activa `--per-page` y ajusta `--tile` automáticamente según cantidad de páginas (1 pág → tile 3; 2-3 → tile 4 + per-page; 4+ → tile 5 + per-page). También se activa automáticamente cuando se reciben varios archivos sin `--per-page` ni `--tile`. |
+| `--auto` | Ajusta `--tile` automáticamente según cantidad de páginas (1 pág → tile 3; 2-3 → tile 4 + per-page; 4+ → tile 5 + per-page). También se activa automáticamente cuando se reciben varios archivos sin `--per-page` ni `--tile`. |
 | `--tile N` | Divide cada imagen en N franjas horizontales solapadas (1–6) antes de enviarla a IA. Requiere Pillow. Solo afecta imágenes, no PDFs. Default: 1. |
 
 ### Entorno

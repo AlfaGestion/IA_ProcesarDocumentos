@@ -61,9 +61,9 @@ Procesamiento de páginas:
   --per-page              Procesa cada archivo/página por separado con IA y
                           luego unifica las filas. Mejora extracción en tablas
                           largas o facturas multipágina.
-  --auto                  Activa per-page y ajusta --tile automáticamente según
-                          cantidad de páginas (1 pág → tile 3; 2-3 → tile 4
-                          per-page; 4+ → tile 5 per-page). También se activa
+  --auto                  Ajusta --tile automáticamente según cantidad de
+                          páginas (1 pág → tile 3; 2-3 → tile 4 per-page;
+                          4+ → tile 5 per-page). También se activa
                           automáticamente cuando se reciben varios archivos sin
                           --per-page ni --tile explícito.
   --tile N                Divide cada imagen en N franjas horizontales
@@ -109,9 +109,13 @@ except Exception:
     PdfWriter = None
 
 try:
-    import fitz as _fitz  # pymupdf — fallback para expansión de PDFs
+    import pymupdf as _fitz  # PyMuPDF, usado para expansión de PDFs
 except Exception:
-    _fitz = None
+    try:
+        import importlib
+        _fitz = importlib.import_module("fitz")  # compatibilidad con PyMuPDF antiguo
+    except Exception:
+        _fitz = None
 
 
 MAX_INPUT_FILES = 10
@@ -1416,6 +1420,11 @@ def main() -> None:
     )
     parser.add_argument("--outdir", default="", help="Carpeta de salida. Default: TEMP del sistema")
     parser.add_argument("--prompt-file", default="", help="Archivo .txt con prompt personalizado")
+    parser.add_argument(
+        "--prompt-extra",
+        default="",
+        help="Texto adicional de contexto para anexar al prompt base.",
+    )
     parser.add_argument("--model", default="gpt-4.1-mini", help="Modelo a usar (default: gpt-4.1-mini)")
     parser.add_argument(
         "--fallback-model",
@@ -1575,11 +1584,14 @@ def main() -> None:
                     args.tile = 3
                     args.per_page = False
                 elif n <= 3:
-                    # Para pocas paginas: enviar todo junto con mas tiles.
-                    # El modelo ve el contexto completo y no hay riesgo de que
-                    # detect_mismatched_invoice_pages descarte paginas continuacion.
+                    # En facturas multipagina con tablas largas, una sola
+                    # llamada tiende a cortar renglones. Procesar por pagina
+                    # conserva mejor el detalle y luego se unifica.
                     args.tile = 4
-                    args.per_page = False
+                    args.per_page = True
+                    if not args.all_pages:
+                        args.all_pages = True
+                        log("all-pages activado automaticamente por multiples archivos.")
                 else:
                     args.tile = 5
                     args.per_page = True
@@ -1590,6 +1602,13 @@ def main() -> None:
 
             status("Cargando prompt...")
             prompt = PROVIDER_ONLY_PROMPT if args.proveedor else read_prompt(args.prompt_file.strip() or None)
+            prompt_extra = (args.prompt_extra or "").strip()
+            if prompt_extra and not args.proveedor:
+                prompt = (
+                    f"{prompt.rstrip()}\n\n"
+                    "CONTEXTO ADICIONAL DEL USUARIO / SISTEMA:\n"
+                    f"{prompt_extra}\n"
+                )
 
             if 'json' not in prompt.lower():
                 prompt = 'Responde solo con json.\n' + prompt
