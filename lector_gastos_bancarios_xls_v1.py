@@ -67,11 +67,11 @@ DEFAULT_RULES: Dict[str, Any] = {
             },
             "columns": {"date": "Fecha", "description": "Concepto", "amount": "Importe"},
             "rules": [
-                {"match": r"GRAVAMEN LEY 25413|IMP\.DB/CR", "mode": "regex", "category": "IDC_A_COMPUTAR"},
+                {"match": r"GRAVAMEN LEY 25413|IMP\.?\s*DB/CR|IMP\.?\s*(?:CRE|DEB)\.?\s*LEY\s*25413|IMPUESTO\s*LEY\s*25413", "mode": "regex", "category": "IDC_A_COMPUTAR"},
                 {"match": r"GRAVAMEN IBRN|IMPUESTO RIONEGRINO|ING\.? ?BRUT|SIRCREB|RET\.?IIBB", "mode": "regex", "category": "RET_IIBB"},
                 {"match": r"COMISION|COMIS|^COM\b|INTERES|INTERESES|ARANCEL|GASTO BANC", "mode": "regex", "category": "GASTO"},
                 {"match": r"\b(IVA PERCEPCION|PERCEPCION IVA|PERC\.?\s*IVA|PERCEP\.?\s*IVA|RETEN(?:CION)?\s*IVA|RET\.?\s*IVA|RG ?2408)\b", "mode": "regex", "category": "RET_IVA"},
-                {"match": r"\b(IVA BASE|IVA ALICUOTA|IVA\s+\d+(?:[.,]\d+)?(?:\s*%)?|IVA\s+[A-Z]+(?:\s+\d{4})?|CRED\.?\s*FISC(?:AL)?\s*IVA)\b", "mode": "regex", "category": "IVA_CREDITO"},
+                {"match": r"\b(IVA BASE|IVA ALICUOTA|IVA\s+\d+(?:[.,]\d+)?(?:\s*%)?|IVA\s+[A-Z]+(?:\s+\d{4})?|CRED\.?\s*FISC(?:AL)?\s*IVA|IVA\s+COMISION|IVA\s+ARANCEL|IVA\s+GASTO)\b", "mode": "regex", "category": "IVA_CREDITO"},
                 {"match": r"RETENCION GANAN|RET\.?GAN", "mode": "regex", "category": "RET_GAN"},
             ],
             "exclusions": [
@@ -93,11 +93,11 @@ DEFAULT_RULES: Dict[str, Any] = {
             },
             "columns": {"date": "Fecha", "description": "Descripción", "debit": "Débito", "credit": "Crédito"},
             "rules": [
-                {"match": r"GRAVAMEN LEY 25413|IMP\.DB/CR", "mode": "regex", "category": "IDC_A_COMPUTAR"},
+                {"match": r"GRAVAMEN LEY 25413|IMP\.?\s*DB/CR|IMP\.?\s*(?:CRE|DEB)\.?\s*LEY\s*25413|IMPUESTO\s*LEY\s*25413", "mode": "regex", "category": "IDC_A_COMPUTAR"},
                 {"match": r"GRAVAMEN IBRN|IMPUESTO RIONEGRINO|ING\.? ?BRUT|SIRCREB|RET\.?IIBB", "mode": "regex", "category": "RET_IIBB"},
                 {"match": r"COMISION|COMIS|^COM\b|INTERES|INTERESES|ARANCEL|GASTO BANC", "mode": "regex", "category": "GASTO"},
                 {"match": r"\b(IVA PERCEPCION|PERCEPCION IVA|PERC\.?\s*IVA|PERCEP\.?\s*IVA|RETEN(?:CION)?\s*IVA|RET\.?\s*IVA|RG ?2408)\b", "mode": "regex", "category": "RET_IVA"},
-                {"match": r"\b(IVA BASE|IVA ALICUOTA|IVA\s+\d+(?:[.,]\d+)?(?:\s*%)?|IVA\s+[A-Z]+(?:\s+\d{4})?|CRED\.?\s*FISC(?:AL)?\s*IVA)\b", "mode": "regex", "category": "IVA_CREDITO"},
+                {"match": r"\b(IVA BASE|IVA ALICUOTA|IVA\s+\d+(?:[.,]\d+)?(?:\s*%)?|IVA\s+[A-Z]+(?:\s+\d{4})?|CRED\.?\s*FISC(?:AL)?\s*IVA|IVA\s+COMISION|IVA\s+ARANCEL|IVA\s+GASTO)\b", "mode": "regex", "category": "IVA_CREDITO"},
                 {"match": r"RETENCION GANAN|RET\.?GAN", "mode": "regex", "category": "RET_GAN"},
             ],
             "exclusions": [

@@ -200,6 +200,65 @@ class StatusUI:
     def mainloop(self) -> None:
         self.root.mainloop()
 
+    def ask_document_type(self, file_name: str, detected_type: str) -> str:
+        if self._closed:
+            return detected_type
+
+        result = {"value": detected_type}
+        done = threading.Event()
+
+        def _show_dialog() -> None:
+            try:
+                dlg = tk.Toplevel(self.root)
+                dlg.title("Confirmar tipo de documento")
+                dlg.resizable(False, False)
+                dlg.transient(self.root)
+                dlg.grab_set()
+
+                ttk.Label(
+                    dlg,
+                    text="El documento es ambiguo. Elegí cómo querés analizarlo:",
+                    font=("Segoe UI", 10),
+                ).pack(padx=14, pady=(14, 8), anchor="w")
+                ttk.Label(
+                    dlg,
+                    text=file_name,
+                    font=("Segoe UI", 9),
+                ).pack(padx=14, pady=(0, 12), anchor="w")
+
+                ttk.Button(
+                    dlg,
+                    text="Extracto bancario",
+                    command=lambda: _choose("bank_statement"),
+                ).pack(fill="x", padx=14, pady=4)
+                ttk.Button(
+                    dlg,
+                    text="Liquidación de tarjeta",
+                    command=lambda: _choose("card_settlement"),
+                ).pack(fill="x", padx=14, pady=4)
+                ttk.Button(
+                    dlg,
+                    text="Mixto",
+                    command=lambda: _choose("mixed_financial"),
+                ).pack(fill="x", padx=14, pady=4)
+
+                def _choose(value: str) -> None:
+                    result["value"] = value
+                    try:
+                        dlg.grab_release()
+                    except Exception:
+                        pass
+                    dlg.destroy()
+                    done.set()
+
+                dlg.protocol("WM_DELETE_WINDOW", lambda: _choose(detected_type))
+            except Exception:
+                done.set()
+
+        self.root.after(0, _show_dialog)
+        done.wait()
+        return str(result["value"] or detected_type)
+
 
 @dataclass
 class MovementItem:
@@ -313,7 +372,7 @@ def detect_card_brand(sample_text: str, file_name: str) -> Optional[str]:
     return None
 
 
-def detect_document_type(sample_text: str, source_kind: str, institution: Optional[str], card_brand: Optional[str]) -> str:
+def _document_type_signals(sample_text: str, source_kind: str, institution: Optional[str], card_brand: Optional[str]) -> Dict[str, bool]:
     probe = _norm_text(sample_text)
     has_bank_markers = any(
         marker in probe
@@ -358,20 +417,57 @@ def detect_document_type(sample_text: str, source_kind: str, institution: Option
             "FECHA DE PAGO",
         ]
     )
+    has_bank_ledger_layout = any(
+        marker in probe
+        for marker in [
+            "FECHA CONCEPTO REFER",
+            "DEBITOS CREDITOS SALDO",
+            "SALDO ANTERIOR",
+            "ESTADO DE CUENTAS UNIFICADO",
+        ]
+    )
+    return {
+        "source_is_spreadsheet": source_kind == "spreadsheet",
+        "has_bank_markers": has_bank_markers,
+        "has_card_markers": has_card_markers,
+        "has_card_movements_inside_bank": has_card_movements_inside_bank,
+        "has_monthly_settlement_layout": has_monthly_settlement_layout,
+        "has_bank_ledger_layout": has_bank_ledger_layout,
+        "has_institution": bool(institution),
+        "has_card_brand": bool(card_brand),
+    }
 
-    if source_kind == "spreadsheet":
+
+def detect_document_type(sample_text: str, source_kind: str, institution: Optional[str], card_brand: Optional[str]) -> str:
+    signals = _document_type_signals(sample_text, source_kind, institution, card_brand)
+
+    if signals["source_is_spreadsheet"]:
         return "bank_statement"
-    if has_monthly_settlement_layout:
+    if signals["has_monthly_settlement_layout"]:
         return "card_settlement"
-    if has_bank_markers and (has_card_markers or has_card_movements_inside_bank):
+    if signals["has_bank_ledger_layout"]:
+        return "bank_statement"
+    if signals["has_bank_markers"] and signals["has_card_markers"]:
         return "mixed_financial"
-    if has_bank_markers and card_brand and has_card_movements_inside_bank:
-        return "mixed_financial"
-    if has_card_markers or (card_brand and not institution):
+    if signals["has_card_markers"] or (signals["has_card_brand"] and not signals["has_institution"]):
         return "card_settlement"
-    if has_bank_markers or institution:
+    if signals["has_bank_markers"] or signals["has_institution"]:
         return "bank_statement"
     return "unknown"
+
+
+def _document_type_is_ambiguous(sample_text: str, source_kind: str, institution: Optional[str], card_brand: Optional[str]) -> bool:
+    signals = _document_type_signals(sample_text, source_kind, institution, card_brand)
+    if signals["source_is_spreadsheet"]:
+        return False
+    if signals["has_bank_ledger_layout"] and not signals["has_monthly_settlement_layout"]:
+        return False
+    if signals["has_monthly_settlement_layout"] and not signals["has_bank_ledger_layout"]:
+        return False
+    return bool(
+        (signals["has_bank_markers"] and signals["has_card_markers"])
+        or (signals["has_bank_markers"] and signals["has_card_brand"] and not signals["has_bank_ledger_layout"])
+    )
 
 
 def detect_period(sample_text: str, file_name: str) -> Optional[str]:
@@ -510,6 +606,11 @@ def match_spreadsheet_category(desc: str, compiled_rules: List[Any]) -> Optional
         or "I V A BASE" in relaxed
         or "IVA ALICUOTA" in relaxed
         or "I V A ALICUOTA" in relaxed
+        or "CRED FISC IVA" in relaxed
+        or "CREDITO FISCAL IVA" in relaxed
+        or "IVA COMISION" in relaxed
+        or "IVA ARANCEL" in relaxed
+        or "IVA GASTO" in relaxed
         or re.match(r"^IVA\s+(\d+(?:[.,]\d+)?(?:\s*%)?|[A-Z]+(?:\s+\d{4})?)\b", relaxed)
         or re.match(r"^I V A\s+(\d+(?:[.,]\d+)?(?:\s*%)?|[A-Z]+(?:\s+\d{4})?)\b", relaxed)
     ):
@@ -526,7 +627,12 @@ def match_spreadsheet_category(desc: str, compiled_rules: List[Any]) -> Optional
         return "COMISION_FINANCIERA"
     if "IMPUESTO" in relaxed or "TRIBUTO" in relaxed or "SELLADO" in relaxed:
         return "IMPUESTOS_VARIOS"
-    if "GRAVAMEN LEY 25413" in relaxed or "IMP DB CR" in relaxed:
+    if (
+        "GRAVAMEN LEY 25413" in relaxed
+        or "IMP DB CR" in relaxed
+        or re.search(r"\bIMP\s+(?:CRE|DEB)\s+LEY\s+25413\b", relaxed)
+        or re.search(r"\bIMPUESTO\s+LEY\s+25413\b", relaxed)
+    ):
         return "IDC_A_COMPUTAR"
     if "ARANCEL" in relaxed:
         return "ARANCEL_TARJETA"
@@ -608,6 +714,32 @@ def build_blueprint(file_path: Path) -> UnifiedDocument:
         proposed_entry=proposed_entry,
         trace=trace,
     )
+
+
+def _maybe_confirm_ambiguous_document_type(
+    file_path: Path,
+    doc: UnifiedDocument,
+    ui: Optional[StatusUI],
+) -> UnifiedDocument:
+    if doc.source_kind != "pdf" or ui is None:
+        return doc
+
+    sample_text = read_pdf_sample(file_path)
+    if not _document_type_is_ambiguous(sample_text, doc.source_kind, doc.institution, doc.card_brand):
+        return doc
+
+    ui.push("Detección ambigua: se encontraron señales de banco y tarjeta.")
+    chosen = ui.ask_document_type(file_path.name, doc.document_type)
+    if chosen != doc.document_type:
+        doc.document_type = chosen
+        doc.summary.short_text = (
+            f"{doc.institution or 'Documento financiero'}, "
+            f"{'extracto bancario' if chosen == 'bank_statement' else 'liquidacion de tarjeta' if chosen == 'card_settlement' else 'documento mixto'}"
+        )
+    doc.summary.warnings.append(f"Tipo de documento confirmado manualmente: {chosen}")
+    doc.summary.needs_review = True
+    doc.trace.notes.append(f"document_type_override={chosen}")
+    return doc
 
 
 def _detect_direction(amount: float) -> str:
@@ -1471,7 +1603,8 @@ def populate_from_bank_pdf(doc: UnifiedDocument, file_path: Path) -> UnifiedDocu
     doc.period = infer_period_from_file_name(file_path.name) or bank_xls._infer_period_end_date(file_path.name)
 
     has_card_rows = any(item.category == "TARJETA" for item in items)
-    doc.document_type = "mixed_financial" if has_card_rows else "bank_statement"
+    if doc.document_type not in {"bank_statement", "mixed_financial"}:
+        doc.document_type = "bank_statement"
     subtotal = sum(float(value) for key, value in totals.items() if key != "BANCO")
     totals["BANCO"] = round(-subtotal, 2)
 
@@ -1489,6 +1622,10 @@ def populate_from_bank_pdf(doc: UnifiedDocument, file_path: Path) -> UnifiedDocu
     )
     kind_label = "documento mixto" if doc.document_type == "mixed_financial" else "extracto bancario"
     doc.summary.short_text = f"{doc.institution or 'Documento financiero'}, {kind_label} con {len(items)} movimientos clasificados"
+    if has_card_rows and doc.document_type == "bank_statement":
+        doc.summary.warnings.append(
+            "Se detectaron movimientos originados en tarjeta dentro del extracto, pero el documento se mantuvo como extracto bancario."
+        )
     if not items:
         doc.summary.warnings.append("No se pudieron clasificar movimientos contables en el PDF.")
         doc.summary.needs_review = True
@@ -1645,8 +1782,9 @@ def populate_from_bank_spreadsheet(doc: UnifiedDocument, file_path: Path) -> Uni
     return doc
 
 
-def enrich_document(file_path: Path) -> UnifiedDocument:
+def enrich_document(file_path: Path, ui: Optional[StatusUI] = None) -> UnifiedDocument:
     doc = build_blueprint(file_path)
+    doc = _maybe_confirm_ambiguous_document_type(file_path, doc, ui)
     if doc.source_kind == "spreadsheet":
         return populate_from_bank_spreadsheet(doc, file_path)
     if doc.source_kind == "pdf" and doc.document_type == "card_settlement":
@@ -1710,7 +1848,7 @@ def main() -> None:
                 if not file_path.exists():
                     raise SystemExit(f"ERROR: No existe el archivo: {raw_path}")
 
-                doc = enrich_document(file_path)
+                doc = enrich_document(file_path, ui=ui)
                 docs.append(document_to_dict(doc))
                 log(
                     f"Detectado: tipo={doc.document_type} banco={doc.institution or '-'} "
