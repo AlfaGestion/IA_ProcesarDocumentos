@@ -11,7 +11,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 
-DEFAULT_IA_BACKEND_URL = "http://alfanetac.ddns.net:8805"
+DEFAULT_IA_BACKEND_URL = "https://alfacentral.ddns.net"
 DEFAULT_IA_BACKEND_ROUTE = "/v1/process"
 DEFAULT_IA_CLIENT_ID = "cliente_demo"
 DEFAULT_IA_CLIENT_SECRET = "cambiar_por_secreto_largo"
@@ -70,6 +70,18 @@ def call_backend(
     timeout_seconds: int = 300,
 ) -> str:
     transport = _resolve_transport()
+
+    if transport == "backend":
+        # Resuelve IA_CLIENT_ID/IA_CLIENT_SECRET a partir de la licencia que esta instalación ya
+        # tiene grabada localmente (NW_ESTADISTICAS), en vez de necesitar un secreto propio en el
+        # .env -- se degrada en silencio si no aplica (instalación vieja, sin pyodbc, etc.), nunca
+        # rompe el flujo existente. Import perezoso: si el módulo no está presente todavía en una
+        # instalación sin actualizar, seguimos exactamente igual que antes de este cambio.
+        try:
+            import ia_license_bootstrap
+            ia_license_bootstrap.bootstrap_credentials_if_needed()
+        except Exception:
+            pass
 
     if transport == "openai":
         return _call_openai_direct(
