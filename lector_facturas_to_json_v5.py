@@ -910,10 +910,14 @@ def validate_totals_integrity(data: dict, tolerance: float = 0.03) -> None:
         if rows_count == 0:
             return
 
+        # 2026-09-17: "Neto gravado" en "0,00" (factura 100% Exenta/No Gravada)
+        # parsea a 0.0, no a None - antes eso cortaba la validacion entera sin
+        # caer al fallback de "Total", dejando pasar comprobantes con renglones
+        # faltantes sin aviso y sin disparar el reintento con el modelo fuerte.
         target = _parse_number(tot.get("Neto gravado"))
-        if target is None:
+        if not target:
             target = _parse_number(tot.get("Total"))
-        if target is None or target == 0:
+        if not target:
             return
 
         diff = abs(row_sum - target) / target
