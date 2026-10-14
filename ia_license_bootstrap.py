@@ -126,7 +126,9 @@ def bootstrap_credentials_if_needed() -> None:
     if (os.getenv("IA_CLIENT_ID") or "").strip() or (os.getenv("IA_CLIENT_SECRET") or "").strip():
         return
 
-    licencia = resolve_local_licencia_principal()
+    # La licencia la puede pasar el sistema (compras) en IA_LICENCIA_PRINCIPAL: asi no hace falta
+    # pyodbc, ni el .env con los datos del SQL, ni el driver ODBC para leerla de NW_ESTADISTICAS.
+    licencia = (os.getenv("IA_LICENCIA_PRINCIPAL") or "").strip() or resolve_local_licencia_principal()
     if not licencia:
         return
 
