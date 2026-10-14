@@ -77,11 +77,23 @@ def call_backend(
         # .env -- se degrada en silencio si no aplica (instalación vieja, sin pyodbc, etc.), nunca
         # rompe el flujo existente. Import perezoso: si el módulo no está presente todavía en una
         # instalación sin actualizar, seguimos exactamente igual que antes de este cambio.
+        motivo_credenciales = ""
         try:
             import ia_license_bootstrap
             ia_license_bootstrap.bootstrap_credentials_if_needed()
-        except Exception:
-            pass
+            motivo_credenciales = getattr(ia_license_bootstrap, "ULTIMO_MOTIVO", "") or ""
+        except Exception as e:
+            motivo_credenciales = f"Error al obtener las credenciales de IA: {e}"
+
+        # Sin credenciales propias, antes se seguia con el cliente de ejemplo (cliente_demo) y el
+        # servidor respondia "HTTP 403 unknown_client", que no dice que es lo que falta. Ahora se
+        # corta con el motivo real. IA_PERMITIR_CLIENTE_DEMO=1 mantiene el comportamiento anterior
+        # (pruebas contra un backend local que tenga cliente_demo).
+        if not (os.getenv("IA_CLIENT_ID") or "").strip() and (os.getenv("IA_PERMITIR_CLIENTE_DEMO") or "").strip() != "1":
+            raise SystemExit(
+                "ERROR: No se pudieron obtener las credenciales de IA de esta instalacion. "
+                + (motivo_credenciales or "Revise la licencia (LICENCIAPRINCIPAL) y la conexion a AlfaCore.")
+            )
 
     if transport == "openai":
         return _call_openai_direct(
@@ -159,6 +171,12 @@ def call_backend(
             resp_body = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")
+        if e.code == 403 and "unknown_client" in detail:
+            raise SystemExit(
+                f"ERROR: el servidor de IA no reconoce al cliente '{client_id}' (no tiene clave de IA en "
+                "ALFA_CENTRAL). Revise el IA_CLIENT_ID configurado o la licencia de esta instalacion. "
+                f"Detalle: HTTP {e.code} {detail}"
+            ) from e
         raise SystemExit(f"ERROR backend HTTP {e.code}: {detail}") from e
     except Exception as e:
         if _has_openai_key():

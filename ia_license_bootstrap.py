@@ -25,6 +25,16 @@ import urllib.request
 from typing import Optional
 
 
+# Motivo legible por el que no se pudieron obtener credenciales (vacio si no hubo problema).
+# ia_backend_transport lo muestra en vez de seguir con un cliente de ejemplo que el servidor rechaza.
+ULTIMO_MOTIVO: str = ""
+
+
+def _motivo(texto: str) -> None:
+    global ULTIMO_MOTIVO
+    ULTIMO_MOTIVO = texto
+
+
 def _sql_conn_str_nw_estadisticas() -> str:
     user = (os.getenv("SQL_USER") or "").strip()
     pwd = (os.getenv("SQL_PASSWORD") or "").strip()
@@ -45,13 +55,17 @@ def _sql_conn_str_nw_estadisticas() -> str:
 def resolve_local_licencia_principal() -> Optional[str]:
     conn_str = _sql_conn_str_nw_estadisticas()
     if not conn_str:
+        _motivo("No estan configurados los datos de conexion al SQL local (SQL_SERVER, SQL_USER, "
+                "SQL_PASSWORD y SQL_DRIVER) para leer la licencia de esta instalacion.")
         return None
 
     try:
         import pyodbc  # type: ignore
     except Exception:
+        _motivo("Falta el componente pyodbc para leer la licencia de esta instalacion.")
         return None
 
+    server = (os.getenv("SQL_SERVER") or "").strip()
     try:
         with pyodbc.connect(conn_str, timeout=5) as conn:
             cur = conn.cursor()
@@ -59,10 +73,13 @@ def resolve_local_licencia_principal() -> Optional[str]:
             row = cur.fetchone()
             if row and row[0]:
                 value = str(row[0]).strip()
-                return value or None
-    except Exception:
+                if value:
+                    return value
+    except Exception as e:
+        _motivo(f"No se pudo leer la licencia en la base NW_ESTADISTICAS del servidor {server}: {e}")
         return None
 
+    _motivo(f"No esta cargada la licencia (LICENCIAPRINCIPAL) en NW_ESTADISTICAS del servidor {server}.")
     return None
 
 
@@ -77,15 +94,29 @@ def _fetch_credentials(base_url: str, licencia: str, timeout_seconds: int = 10) 
     try:
         with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
-    except Exception:
+    except urllib.error.HTTPError as e:
+        try:
+            error = str(json.loads(e.read().decode("utf-8", errors="replace")).get("error") or "")
+        except Exception:
+            error = ""
+        if error == "unknown_license":
+            _motivo(f"La licencia {licencia} de esta instalacion no esta registrada en ALFA_CENTRAL "
+                    "(ficha del cliente, campo LicenciaPrincipal). Hay que cargarla para usar la IA.")
+        else:
+            _motivo(f"AlfaCore ({base_url}) no entrego las credenciales de IA: HTTP {e.code} {error}".strip())
+        return None
+    except Exception as e:
+        _motivo(f"No se pudo contactar a AlfaCore ({base_url}) para obtener las credenciales de IA: {e}")
         return None
 
     if not isinstance(data, dict) or not data.get("ok"):
+        _motivo(f"AlfaCore ({base_url}) no entrego las credenciales de IA para la licencia {licencia}.")
         return None
 
     idcliente = str(data.get("idcliente") or "").strip()
     key_ia = str(data.get("keyIa") or "").strip()
     if not idcliente or not key_ia:
+        _motivo(f"AlfaCore ({base_url}) devolvio credenciales incompletas para la licencia {licencia}.")
         return None
     return idcliente, key_ia
 
