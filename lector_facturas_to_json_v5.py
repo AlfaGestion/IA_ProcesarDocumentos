@@ -961,10 +961,27 @@ def needs_model_fallback(data: dict) -> tuple[bool, str]:
     except Exception:
         return False, ""
 
+def _row_dedup_key(r: dict) -> tuple:
+    return (
+        str(r.get("Codigo_Articulo", "")).strip(),
+        str(r.get("Descripcion", "")).strip(),
+        str(r.get("Cantidad", "")).strip(),
+        str(r.get("Importe_Neto", "")).strip(),
+        str(r.get("Total", "")).strip(),
+    )
+
+
 def merge_data_keep_best(datas: List[dict]) -> dict:
     """Merge multiple page-level results into a single invoice.
     - CAB: keep first non-empty per key
-    - ROWS: concat
+    - ROWS: concat, salvo el primer renglon de una pagina si es identico al
+      ultimo ya acumulado de la pagina anterior (mismo producto/cantidad/
+      importe) - eso es el mismo renglon de tabla leido dos veces porque el
+      corte de pagina cayo justo ahi. NO se deduplica el resto de la lista:
+      una factura puede tener legitimamente el mismo articulo repetido varias
+      veces seguidas (por ejemplo si el proveedor escanea cada bulto/unidad
+      como un renglon aparte), y borrar esos por contenido-igual perdia
+      renglones reales.
     - TOTALES: prefer last non-empty per key
     - meta: keep first non-empty, except totales_raw (prefer last) and orden_columnas (first non-empty list)
     """
@@ -986,7 +1003,10 @@ def merge_data_keep_best(datas: List[dict]) -> dict:
             elif k not in out["CAB"]:
                 out["CAB"][k] = out["CAB"].get(k, v)
 
-        # ROWS: concat
+        # ROWS: concat (salvo posible duplicado exacto en el borde de pagina)
+        if rows and out["ROWS"] and isinstance(rows[0], dict):
+            if _row_dedup_key(rows[0]) == _row_dedup_key(out["ROWS"][-1]) and any(_row_dedup_key(rows[0])):
+                rows = rows[1:]
         out["ROWS"].extend(rows)
 
         # TOTALES: prefer last non-empty
@@ -1691,7 +1711,11 @@ def main() -> None:
                     data_model = call_model(content, model_name, active_files[0])
 
                 if not args.proveedor:
-                    data_model["ROWS"] = dedupe_rows(_ensure_list(data_model.get("ROWS")))
+                    # 2026-09-17: NO se llama mas a dedupe_rows() aca - borraba
+                    # renglones reales cuando el mismo articulo se factura varias
+                    # veces seguidas (ver merge_data_keep_best, que ya saca el
+                    # unico duplicado real: el del borde entre paginas).
+                    data_model["ROWS"] = _ensure_list(data_model.get("ROWS"))
                     adjust_importe_lista_for_bultos(data_model)
                     validate_totals_integrity(data_model, tolerance=0.03)
                 return data_model
