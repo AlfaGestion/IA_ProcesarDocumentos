@@ -26,14 +26,13 @@ def backend_enabled() -> bool:
 
 
 def _resolve_transport() -> str:
+    # 30/10/2026: siempre el servidor (AlfaCore, con la licencia de la instalacion), que tiene la
+    # API key centralizada. Antes, si en el PC quedaba un OPENAI_API_KEY (en el .env junto al exe o
+    # en Windows) se iba directo a OpenAI con esa key, y si estaba vencida daba "401 invalid_api_key".
+    # OpenAI directo solo si se pide explicitamente con IA_TRANSPORT=openai.
     raw = (os.getenv("IA_TRANSPORT") or "").strip().lower()
     if raw in {"backend", "openai"}:
         return raw
-
-    if (os.getenv("IA_BACKEND_URL") or "").strip():
-        return "backend"
-    if (os.getenv("OPENAI_API_KEY") or "").strip():
-        return "openai"
     return "backend"
 
 
@@ -180,13 +179,21 @@ def call_backend(
         raise SystemExit(f"ERROR backend HTTP {e.code}: {detail}") from e
     except Exception as e:
         if _has_openai_key():
-            return _call_openai_direct(
-                content_blocks=content_blocks,
-                model=model,
-                max_output_tokens=max_output_tokens,
-                text=text,
-                timeout_seconds=timeout_seconds,
-            )
+            # Respaldo si el servidor no responde. Si la key local tambien falla (ej. vencida) se
+            # informa que el problema de fondo es el servidor, no solo el 401 de OpenAI.
+            try:
+                return _call_openai_direct(
+                    content_blocks=content_blocks,
+                    model=model,
+                    max_output_tokens=max_output_tokens,
+                    text=text,
+                    timeout_seconds=timeout_seconds,
+                )
+            except SystemExit as e2:
+                raise SystemExit(
+                    f"ERROR backend no disponible ({base_url}): {e}. "
+                    f"Tambien fallo el respaldo con la OPENAI_API_KEY local: {e2}"
+                ) from e
         raise SystemExit(f"ERROR backend no disponible: {e}") from e
 
     try:
